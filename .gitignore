@@ -1,0 +1,12 @@
+.gradle/
+build/
+run/
+outputs/
+reference/mods/*.jar
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+logs/

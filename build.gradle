@@ -1,0 +1,70 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'net.minecraftforge.gradle' version '6.0.54'
+}
+
+version = mod_version
+group = 'com.cti.ctirecipeassistant'
+base { archivesName = 'recipeassistant' }
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+minecraft {
+    mappings channel: 'official', version: minecraft_version
+    copyIdeResources = true
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+            mods {
+                ctirecipeassistant { source sourceSets.main }
+            }
+        }
+    }
+}
+
+// These are local artifact identifiers, not remote Maven coordinates.
+repositories {
+    flatDir { dirs 'reference/mods' }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    implementation fg.deobf('local:jei-1.19.2-forge:11.6.0.1024')
+    compileOnly fg.deobf('local:appliedenergistics2-forge:12.9.9')
+    compileOnly fg.deobf('local:ExtendedAE:1.19-0.2.2-forge')
+    if (providers.gradleProperty('withAe2').getOrElse('true').toBoolean()) {
+        runtimeOnly fg.deobf('local:appliedenergistics2-forge:12.9.9')
+        if (providers.gradleProperty('withExtendedAe').getOrElse('true').toBoolean())
+            runtimeOnly fg.deobf('local:ExtendedAE:1.19-0.2.2-forge')
+    }
+
+    // Optional hover integration; compile against the user's actual FTB Library.
+    compileOnly fg.deobf('local:ftb-library-forge:1902.4.1-build.236')
+    // Optional crafting-station integration, matching the user's local jars.
+    compileOnly fg.deobf('local:TConstruct:1.19.2-3.8.5.58')
+    compileOnly fg.deobf('local:Mantle:1.19.2-1.10.48')
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    inputs.property 'mod_version', mod_version
+    filesMatching('META-INF/mods.toml') {
+        expand mod_version: mod_version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.named('jar', Jar).configure {
+    from('LICENSE') { into 'META-INF' }
+    manifest {
+        attributes 'Implementation-Title': 'Recipe Assistant',
+                'Implementation-Version': mod_version,
+                'MixinConfigs': 'ctirecipeassistant.mixins.json,ctirecipeassistant.ae2.mixins.json'
+    }
+    finalizedBy 'reobfJar'
+}
