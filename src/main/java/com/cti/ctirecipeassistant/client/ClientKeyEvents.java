@@ -2,6 +2,7 @@ package com.cti.ctirecipeassistant.client;
 
 import com.cti.ctirecipeassistant.CtiRecipeAssistant;
 import com.cti.ctirecipeassistant.client.gui.RecipeTreeScreen;
+import com.cti.ctirecipeassistant.client.gui.CraftQuantityScreen;
 import com.cti.ctirecipeassistant.integration.PatternConfirmation;
 
 import com.cti.ctirecipeassistant.client.jei.TreeJeiPlugin;
@@ -63,9 +64,7 @@ public final class ClientKeyEvents {
     private static boolean openHovered(Screen screen) {
         if (CraftExecutor.busy() || OptionalIntegrations.busy()) return false;
         var runtime = TreeJeiPlugin.runtime;
-        // The preview hotkey acts on its current issue even while its numeric field has focus.
-        if (screen instanceof PatternConfirmation preview && runtime != null) { preview.locateProblem(); return true; }
-        if (screen.getFocused() instanceof EditBox) return false;
+        if (screen.getFocused() instanceof EditBox && !(screen instanceof CraftQuantityScreen)) return false;
         boolean ftbLoaded = ModList.get().isLoaded("ftblibrary");
         if (ftbLoaded && FtbHoveredIngredient.isTyping(screen)) return false;
         if (runtime == null) { message("jei_unavailable"); return true; }
@@ -75,6 +74,23 @@ public final class ClientKeyEvents {
         var window = mc.getWindow();
         double mouseX = mc.mouseHandler.xpos() * window.getGuiScaledWidth() / window.getScreenWidth();
         double mouseY = mc.mouseHandler.ypos() * window.getGuiScaledHeight() / window.getScreenHeight();
+        if (screen instanceof RecipeTreeScreen tree) {
+            var hovered = tree.ingredientAt(mouseX, mouseY);
+            if (hovered != null && hovered != tree.finalRoot().target) RecipeInteractions.openItem(hovered, tree);
+            return true;
+        }
+        if (screen instanceof CraftQuantityScreen quantity) {
+            var hovered = quantity.ingredientAt(mouseX, mouseY);
+            if (hovered == null) return false;
+            RecipeInteractions.openItem(hovered, quantity);
+            return true;
+        }
+        if (screen instanceof PatternConfirmation preview) {
+            var hovered = preview.ingredientAt(mouseX, mouseY);
+            if (hovered != null) RecipeInteractions.openItem(hovered, screen);
+            else preview.locateProblem();
+            return true;
+        }
         if (RecipeInteractions.key(screen, mouseX, mouseY)) return true;
         ItemStack target = runtime.getIngredientListOverlay().getIngredientUnderMouse().flatMap(i -> i.getItemStack())
                 .or(() -> runtime.getBookmarkOverlay().getIngredientUnderMouse().flatMap(i -> i.getItemStack()))
@@ -87,6 +103,7 @@ public final class ClientKeyEvents {
             var slot = container.getSlotUnderMouse();
             if (slot != null && slot.hasItem()) target = slot.getItem();
         }
+        if (target.isEmpty() && RecipeInteractions.choosing()) return true;
         if (target.isEmpty()) target = mc.player.getMainHandItem();
         return open(target, screen);
     }

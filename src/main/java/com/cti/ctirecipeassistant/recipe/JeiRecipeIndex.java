@@ -2,7 +2,6 @@ package com.cti.ctirecipeassistant.recipe;
 
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
-import mezz.jei.api.gui.drawable.IDrawable;
 import mezz.jei.api.constants.RecipeTypes;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import mezz.jei.api.recipe.*;
@@ -16,16 +15,12 @@ public final class JeiRecipeIndex {
     private final boolean craftingOnly;
     private final Map<String, List<RecipeCandidate>> cache = new HashMap<>();
     private final Map<String, IRecipeLayoutDrawable<?>> layouts = new HashMap<>();
-    private final Map<String, IDrawable> categoryIcons = new HashMap<>();
-    private final Map<String, TreeIngredient> machineIcons = new HashMap<>();
     public JeiRecipeIndex(IJeiRuntime runtime) { this(runtime, false); }
     public JeiRecipeIndex(IJeiRuntime runtime, boolean craftingOnly) {
         this.runtime = runtime;
         this.craftingOnly = craftingOnly;
     }
     public boolean craftingOnly() { return craftingOnly; }
-    public IDrawable categoryIcon(String category) { return categoryIcons.get(category); }
-    public TreeIngredient machineIcon(String category) { return machineIcons.get(category); }
     public IRecipeLayoutDrawable<?> layout(String id) { return layouts.get(id); }
 
     public List<RecipeCandidate> find(TreeIngredient target) {
@@ -45,11 +40,8 @@ public final class JeiRecipeIndex {
     private <R> void readCategory(IRecipeCategory<R> category, IFocusGroup focuses, TreeIngredient target,
                                   List<RecipeCandidate> result) {
         var manager = runtime.getRecipeManager();
-        String categoryId = category.getRecipeType().getUid().toString();
-        categoryIcons.put(categoryId, category.getIcon());
         var machines = manager.createRecipeCatalystLookup(category.getRecipeType()).get()
                 .map(i -> TreeIngredient.of(i, runtime.getIngredientManager())).toList();
-        if (!machines.isEmpty()) machineIcons.put(categoryId, machines.get(0));
         manager.createRecipeLookup(category.getRecipeType()).limitFocus(focuses.getAllFocuses()).get().forEach(recipe -> {
             if (craftingOnly && (!(recipe instanceof CraftingRecipe crafting) || !crafting.canCraftInDimensions(3, 3))) return;
             // Empty focus prevents plugins from narrowing alternative input/output ingredients.
@@ -61,28 +53,37 @@ public final class JeiRecipeIndex {
                     });
         });
     }
-    public <R> RecipeCandidate readLayout(IRecipeLayoutDrawable<R> layout) {
-        var machines = runtime.getRecipeManager().createRecipeCatalystLookup(layout.getRecipeCategory().getRecipeType()).get()
+    public <R> RecipeCandidate readLayout(IRecipeLayoutDrawable<R> layout, TreeIngredient target) {
+        var manager = runtime.getRecipeManager();
+        var category = layout.getRecipeCategory();
+        var full = manager.createRecipeLayoutDrawable(category, layout.getRecipe(),
+                        runtime.getJeiHelpers().getFocusFactory().getEmptyFocusGroup())
+                .filter(candidate -> slots(candidate.getRecipeSlotsView(), RecipeIngredientRole.OUTPUT).stream()
+                        .flatMap(List::stream).anyMatch(i -> i.key().equals(target.key()))).orElse(layout);
+        var machines = manager.createRecipeCatalystLookup(category.getRecipeType()).get()
                 .map(i -> TreeIngredient.of(i, runtime.getIngredientManager())).toList();
-        return readLayout(layout, machines);
+        return readLayout(full, machines);
     }
     private <R> RecipeCandidate readLayout(IRecipeLayoutDrawable<R> layout, List<TreeIngredient> machines) {
         var category = layout.getRecipeCategory();
         var slots = layout.getRecipeSlotsView();
         var inputs = slots(slots, RecipeIngredientRole.INPUT);
         var outputs = slots(slots, RecipeIngredientRole.OUTPUT);
-        var catalysts = new ArrayList<>(slots(slots, RecipeIngredientRole.CATALYST));
-        if (!machines.isEmpty()) catalysts.add(machines);
+        var catalysts = slots(slots, RecipeIngredientRole.CATALYST);
+        var signatureCatalysts = new ArrayList<>(catalysts);
+        if (!machines.isEmpty()) signatureCatalysts.add(machines);
         String categoryId = category.getRecipeType().getUid().toString();
         String signature = categoryId + "|" + category.getRegistryName(layout.getRecipe()) + "|"
-                + signature(inputs) + "|" + signature(outputs) + "|" + signature(catalysts);
+                + signature(inputs) + "|" + signature(outputs) + "|" + signature(signatureCatalysts);
         String id = UUID.nameUUIDFromBytes(signature.getBytes(StandardCharsets.UTF_8)).toString();
         layouts.put(id, layout);
-        return new RecipeCandidate(id, categoryId, category.getTitle().getString(), inputs, outputs, List.copyOf(catalysts));
+        return new RecipeCandidate(id, categoryId, category.getTitle().getString(), inputs, outputs, catalysts);
     }
     private List<List<TreeIngredient>> slots(IRecipeSlotsView slots, RecipeIngredientRole role) {
+        var ingredients = runtime.getIngredientManager();
         return slots.getSlotViews(role).stream().map(slot -> slot.getAllIngredients()
-                .map(i -> TreeIngredient.of(i, runtime.getIngredientManager())).toList()).toList();
+                .map(i -> role == RecipeIngredientRole.INPUT ? TreeIngredient.ofInput(i, ingredients)
+                        : TreeIngredient.of(i, ingredients)).toList()).toList();
     }
     private String signature(List<List<TreeIngredient>> slots) {
         return slots.stream().map(slot -> slot.stream().map(i -> i.key() + "=" + i.quantity()).sorted().toList().toString()).toList().toString();

@@ -1,7 +1,12 @@
 package com.cti.ctirecipeassistant.client.operation;
 
+import com.cti.ctirecipeassistant.client.jei.TreeJeiPlugin;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
+import mezz.jei.api.gui.ingredient.IRecipeSlotView;
+import mezz.jei.common.transfer.RecipeTransferUtil;
+import net.minecraft.world.SimpleContainer;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.Slot;
@@ -32,11 +37,35 @@ public record CraftingInventory(AbstractContainerMenu menu, List<Slot> grid, Lis
         return OptionalIntegrations.stock(menu);
     }
 
+    public List<IRecipeSlotView> missingInputs(List<IRecipeSlotView> inputs, Player player) {
+        if (inputs.size() > grid.size()) return List.of();
+        var available = new LinkedHashMap<Slot, ItemStack>();
+        Stream.concat(grid.stream(), materialSlots.stream())
+                .filter(slot -> slot.isActive() && slot.mayPickup(player) && slot.hasItem())
+                .forEach(slot -> available.put(slot, slot.getItem().copy()));
+        if (OptionalIntegrations.refillAvailable(menu)) {
+            var network = networkStock();
+            var counted = new HashSet<ItemIdentity>();
+            var viewOnly = new SimpleContainer(1);
+            for (var input : inputs) input.getItemStacks().forEach(stack -> {
+                var identity = ItemIdentity.of(stack);
+                long stock = network.getOrDefault(identity, 0L);
+                if (stock <= 0 || !counted.add(identity)) return;
+                var copy = stack.copy();
+                copy.setCount((int) Math.min(grid.size(), stock));
+                available.put(new Slot(viewOnly, 0, 0, 0), copy);
+            });
+        }
+        return RecipeTransferUtil.getRecipeTransferOperations(TreeJeiPlugin.runtime.getJeiHelpers().getStackHelper(),
+                available, inputs, grid).missingItems;
+    }
+
     public long available(TreeIngredient target, Map<ItemIdentity, Long> network) {
         if (!(target.typed().getIngredient() instanceof ItemStack wanted)) return 0;
+        var identity = ItemIdentity.of(wanted);
         return Stream.concat(grid.stream(), materialSlots.stream()).map(Slot::getItem)
-                .filter(stack -> ItemStack.isSameItemSameTags(stack, wanted)).mapToLong(ItemStack::getCount).sum()
-                + network.getOrDefault(ItemIdentity.of(wanted), 0L);
+                .filter(stack -> ItemStack.isSameItemSameTags(stack, wanted) && identity.equals(ItemIdentity.of(stack)))
+                .mapToLong(ItemStack::getCount).sum() + network.getOrDefault(identity, 0L);
     }
 
     public Map<ItemIdentity, Long> externalStock(Map<ItemIdentity, Long> network) {

@@ -1,9 +1,10 @@
 package com.cti.ctirecipeassistant.integration.ae2;
 
 import appeng.api.stacks.GenericStack;
-import mezz.jei.api.gui.drawable.IDrawable;
-import mezz.jei.common.Internal;
-import mezz.jei.gui.elements.GuiIconButtonSmall;
+import appeng.api.stacks.AEItemKey;
+import appeng.client.gui.Icon;
+import appeng.client.gui.widgets.ToggleButton;
+import appeng.core.localization.ButtonToolTips;
 import appeng.api.stacks.AmountFormat;
 import com.cti.ctirecipeassistant.client.gui.CompactUi;
 import com.cti.ctirecipeassistant.client.gui.RecipeTreeScreen;
@@ -14,6 +15,7 @@ import com.cti.ctirecipeassistant.integration.PatternConfirmation;
 import com.cti.ctirecipeassistant.recipe.*;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.systems.RenderSystem;
+import mezz.jei.api.constants.VanillaTypes;
 import net.minecraft.client.gui.components.*;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -21,14 +23,14 @@ import java.util.*;
 
 /** Displays the exact input selection used by PatternEncoder; no recipe text inference. */
 public final class PatternPreviewScreen extends Screen implements PatternConfirmation {
+    private static final int LIST_TOP = 42, INPUT_ROW = 20;
     private final ClientRecipeOperation<?> operation;
     private final RecipeTreeScreen tree;
     private final RecipeInteractions.JeiContext jeiContext;
     private final List<TreeIngredient> targets;
-    private int targetIndex, problemIndex, depth, maximum, scroll;
+    private int targetIndex, problemIndex, scroll;
     private PatternEncoder.Preview preview;
-    private EditBox depthBox;
-    private GuiIconButtonSmall decreaseDepth, increaseDepth;
+    private final Map<String, PatternEncoder.Substitutions> substitutions = new HashMap<>();
     private String error = "";
     private List<Component> tooltip = List.of();
     public PatternPreviewScreen(ClientRecipeOperation<?> operation) {
@@ -39,23 +41,17 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
         for (var slot : operation.candidate().outputs()) for (var target : slot) unique.putIfAbsent(target.key(), target);
         targets = List.copyOf(unique.values());
         for (int i = 0; i < targets.size(); i++) if (targets.get(i).key().equals(operation.target().key())) targetIndex = i;
-        depth = tree.encodingDepth(); rebuild(false);
+        rebuild(false);
     }
-    public Object sourceRecipe() { return operation.recipe(); }
-    public RecipeInteractions.JeiContext jeiContext() { return jeiContext; }
-    public Screen terminal() { return operation.parentScreen(); }
-    public TreeIngredient target() { return tree.finalRoot().target; }
-    public boolean matches(ClientRecipeOperation<?> selected) {
-        return selected.parentScreen() == terminal() && tree.finalRoot().selected != null
-                && selected.candidate().id().equals(tree.finalRoot().selected.id()) && selected.target().key().equals(target().key());
-    }
-    public void startFromJei() {
-        rebuild(false); error = Optional.ofNullable(PatternEncoder.start(preview)).orElse("");
-        if (!error.isEmpty()) net.minecraft.client.Minecraft.getInstance().setScreen(this);
+    private TreeIngredient target() { return tree.finalRoot().target; }
+    private void confirm() {
+        rebuild(false);
+        error = Optional.ofNullable(PatternEncoder.start(preview)).orElse("");
     }
     private void rebuild(boolean reset) {
-        maximum = PatternPlanner.maximumDepth(tree.finalRoot());
-        preview = PatternEncoder.prepare(operation, tree.finalRoot(), tree.index(), tree.preferences(), Math.min(depth, maximum));
+        preview = PatternEncoder.prepare(operation, tree.finalRoot(), tree.index(), tree.preferences());
+        for (var entry : preview.entries()) if (entry.crafting)
+            entry.substitutions = substitutions.getOrDefault(entry.patternKey(), entry.substitutions);
         if (reset) { scroll = 0; problemIndex = 0; }
         problemIndex = Math.min(problemIndex, Math.max(0, preview.issues().size() - 1));
         scroll = Math.min(scroll, maxScroll());
@@ -68,66 +64,112 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
     public Optional<PatternPlanner.Issue> currentIssue() {
         return preview.issues().isEmpty() ? Optional.empty() : Optional.of(preview.issues().get(problemIndex));
     }
+    @Override public TreeIngredient ingredientAt(double x, double y) {
+        int left = left() + 10;
+        if (CompactUi.hit(x, y, left, 18, 16, 16)) return target();
+        if (CompactUi.hit(x, y, left, height - 68, 16, 16) && !preview.issues().isEmpty())
+            return currentIssue().orElseThrow().node().target;
+        if (y < LIST_TOP || y >= listBottom()) return null;
+        int top = LIST_TOP - scroll;
+        for (var entry : preview.entries()) {
+            int bottom = top + rowHeight(entry);
+            if (y >= top && y < bottom && entry.problem == null) {
+                int outputX = entry.crafting ? left + 76 : left + inputWidth() + 18;
+                if (CompactUi.hit(x, y, outputX, top + 25, 16, 16)) return entry.output();
+                if (entry.crafting) {
+                    for (int i = 0; i < 9; i++)
+                        if (CompactUi.hit(x, y, left + i % 3 * 18 + 1, top + 21 + i / 3 * 18, 16, 16)
+                                && !entry.node.selected.inputs().get(i).isEmpty()) return entry.node.selectedInput(i);
+                } else {
+                    var inputs = entry.inputs();
+                    int columns = columns(), cell = inputWidth() / columns;
+                    for (int i = 0; i < inputs.size(); i++)
+                        if (CompactUi.hit(x, y, left + i % columns * cell, top + 21 + i / columns * INPUT_ROW, 16, 16)
+                                && inputs.get(i).what() instanceof AEItemKey item) {
+                            var manager = TreeJeiPlugin.runtime.getIngredientManager();
+                            return manager.createTypedIngredient(VanillaTypes.ITEM_STACK, item.toStack())
+                                    .map(typed -> TreeIngredient.of(typed, manager)).orElse(null);
+                        }
+                }
+                return null;
+            }
+            top = bottom;
+        }
+        return null;
+    }
     private int left() { return (width - span()) / 2; }
-    private int span() { return Math.min(480, width - 16); }
-    private int listBottom() { return height - (preview.issues().isEmpty() && error.isEmpty() ? 18 : 62); }
-    private int inputWidth() { return Math.max(72, span() - 144); }
-    private int columns() { return Math.max(1, inputWidth() / 110); }
+    private int span() { return Math.min(334, width - 16); }
+    private int listBottom() { return height - (preview.issues().isEmpty() && error.isEmpty() ? 35 : 76); }
+    private int inputWidth() { return Math.max(54, span() - 112); }
+    private int columns() { return Math.max(1, inputWidth() / 104); }
     private int rowHeight(PatternEncoder.Entry entry) {
         if (entry.problem != null) return 42;
-        return entry.crafting ? 80 : 26 + Math.max(1, (entry.inputs().size() + columns() - 1) / columns()) * 26;
+        return entry.crafting ? 80 : 26 + Math.max(1, (entry.inputs().size() + columns() - 1) / columns()) * INPUT_ROW;
     }
-    private int maxScroll() { return Math.max(0, preview.entries().stream().mapToInt(this::rowHeight).sum() - Math.max(1, listBottom() - 76)); }
+    private int maxScroll() { return Math.max(0, preview.entries().stream().mapToInt(this::rowHeight).sum() - Math.max(1, listBottom() - LIST_TOP)); }
     @Override protected void init() {
         clearWidgets(); int l = left();
         if (targets.size() > 1) addRenderableWidget(new Button(l + span() - 28, 18, 18, 18, Component.literal(">"), b -> {
             targetIndex = (targetIndex + 1) % targets.size(); tree.retarget(targets.get(targetIndex), operation.candidate());
-            depth = tree.encodingDepth(); rebuild(true); init();
+            rebuild(true); init();
         }));
-        depthBox = new EditBox(font, l + 51, 45, 66, 18, Component.literal("编码深度"));
-        depthBox.setMaxLength(10);
-        depthBox.setFilter(value -> value.matches("[0-9]*") && (value.isEmpty() || Long.parseLong(value) <= Integer.MAX_VALUE));
-        depthBox.setValue(Integer.toString(depth));
-        var textures = Internal.getTextures();
-        decreaseDepth = addRenderableWidget(new GuiIconButtonSmall(l + 34, 47, 13, 13, minusIcon(), b -> adjustDepth(-1), textures));
-        increaseDepth = addRenderableWidget(new GuiIconButtonSmall(l + 121, 47, 13, 13, textures.getRecipeTransfer(), b -> adjustDepth(1), textures));
-        decreaseDepth.active = depth > 0; increaseDepth.active = depth < Integer.MAX_VALUE;
-        depthBox.setResponder(value -> {
-            depth = value.isEmpty() ? 0 : Integer.parseInt(value); tree.encodingDepth(depth); rebuild(true);
-            decreaseDepth.active = depth > 0; increaseDepth.active = depth < Integer.MAX_VALUE;
-        });
-        addRenderableWidget(depthBox);
+        int footerX = l + span() - 112;
+        addRenderableWidget(new Button(footerX, height - 30, 48, 17, Component.literal("确定"), b -> confirm()));
+        addRenderableWidget(new Button(footerX + 53, height - 30, 48, 17, Component.literal("取消"), b -> onClose()));
     }
-    private void adjustDepth(int delta) {
-        depthBox.setValue(Long.toString(Math.max(0L, Math.min(Integer.MAX_VALUE, (long)depth + delta))));
+    private ToggleButton substitutionButton(PatternEncoder.Entry entry, boolean fluids, int x, int y) {
+        var button = new ToggleButton(fluids ? Icon.FLUID_SUBSTITUTION_ENABLED : Icon.SUBSTITUTION_ENABLED,
+                fluids ? Icon.FLUID_SUBSTITUTION_DISABLED : Icon.SUBSTITUTION_DISABLED, enabled -> {
+                    var selected = entry.substitutions;
+                    entry.substitutions = fluids ? new PatternEncoder.Substitutions(selected.items(), enabled)
+                            : new PatternEncoder.Substitutions(enabled, selected.fluids());
+                    substitutions.put(entry.patternKey(), entry.substitutions);
+                });
+        button.x = x;
+        button.y = y;
+        button.setState(fluids ? entry.substitutions.fluids() : entry.substitutions.items());
+        button.setTooltipOn(fluids
+                ? List.of(ButtonToolTips.FluidSubstitutions.text(), ButtonToolTips.FluidSubstitutionsDescEnabled.text())
+                : List.of(ButtonToolTips.SubstitutionsOn.text(), ButtonToolTips.SubstitutionsDescEnabled.text()));
+        button.setTooltipOff(fluids
+                ? List.of(ButtonToolTips.FluidSubstitutions.text(), ButtonToolTips.FluidSubstitutionsDescDisabled.text())
+                : List.of(ButtonToolTips.SubstitutionsOff.text(), ButtonToolTips.SubstitutionsDescDisabled.text()));
+        return button;
     }
-    private static IDrawable minusIcon() {
-        return new IDrawable() {
-            public int getWidth() { return 7; }
-            public int getHeight() { return 7; }
-            public void draw(PoseStack pose, int x, int y) {
-                fill(pose, x + 2, y + 4, x + 7, y + 5, 0xFF383838);
-                fill(pose, x + 1, y + 3, x + 6, y + 4, 0xFFFFFFFF);
-            }
-        };
+    private String craftingTitle(int number) { return number + ". 合成样板"; }
+    private int substitutionX(int number) { return left() + 10 + font.width(craftingTitle(number)) + 18; }
+
+    private void renderSubstitution(PoseStack pose, ToggleButton button, int mx, int my, float partial) {
+        button.render(pose, mx, my, partial);
+        if (my >= LIST_TOP && my < listBottom() && button.isMouseOver(mx, my))
+            tooltip = button.getTooltipMessage();
     }
+
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        if (CompactUi.hit(mouseX, mouseY, left() + 6, 76, span() - 12, Math.max(1, listBottom() - 76))) {
+        if (CompactUi.hit(mouseX, mouseY, left() + 6, LIST_TOP, span() - 12, Math.max(1, listBottom() - LIST_TOP))) {
             scroll = Math.max(0, Math.min(maxScroll(), scroll + (delta > 0 ? -26 : 26))); return true;
         }
-        if (!preview.issues().isEmpty() && CompactUi.hit(mouseX, mouseY, left() + 6, height - 57, span() - 12, 44)) {
+        if (!preview.issues().isEmpty() && CompactUi.hit(mouseX, mouseY, left() + 6, height - 73, span() - 12, 37)) {
             problemIndex = Math.max(0, Math.min(preview.issues().size() - 1, problemIndex + (delta > 0 ? -1 : 1))); return true;
         }
         return false;
     }
     @Override public boolean mouseClicked(double x, double y, int button) {
-        if (button == 0 && y >= 76 && y < listBottom()) {
-            int top = 76 - scroll;
+        if (button == 0 && y >= LIST_TOP && y < listBottom()) {
+            int top = LIST_TOP - scroll, number = 1;
             for (var entry : preview.entries()) {
-                if (!entry.crafting && entry.problem == null && CompactUi.hit(x, y, left() + span() - 28, top + 1, 18, 16)) {
-                    minecraft.setScreen(new AmountScreen(this, entry)); return true;
+                if (entry.problem == null && y >= top + 1 && y < top + 17) {
+                    int right = left() + span() - 10;
+                    if (entry.crafting) {
+                        int toggleX = substitutionX(number);
+                        if (substitutionButton(entry, false, toggleX, top + 1).mouseClicked(x, y, button)
+                                || substitutionButton(entry, true, toggleX + 18, top + 1).mouseClicked(x, y, button))
+                            return true;
+                    } else if (CompactUi.hit(x, y, right - 18, top + 1, 18, 16)) {
+                        minecraft.setScreen(new AmountScreen(this, entry)); return true;
+                    }
                 }
-                top += rowHeight(entry);
+                top += rowHeight(entry); number++;
             }
         }
         return super.mouseClicked(x, y, button);
@@ -140,44 +182,45 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
     }
     private void ingredient(PoseStack pose, TreeIngredient ingredient, int x, int y, int mx, int my) {
         pose.pushPose(); pose.translate(x, y, 0); ingredient.render(pose, TreeJeiPlugin.runtime.getIngredientManager()); pose.popPose();
-        if (my >= 76 && my < listBottom() && CompactUi.hit(mx, my, x, y, 16, 16))
+        if (my >= LIST_TOP && my < listBottom() && CompactUi.hit(mx, my, x, y, 16, 16))
             tooltip = ingredient.tooltip(TreeJeiPlugin.runtime.getIngredientManager());
     }
     private void input(PoseStack pose, GenericStack input, int x, int y, int w, int mx, int my) {
         itemRenderer.renderAndDecorateItem(input.what().wrapForDisplayOrFilter(), x, y);
-        text(pose, input.what().getDisplayName().getString(), x + 20, y, w - 22, 0x303030);
         String quantity = input.what().formatAmount(input.amount(), AmountFormat.FULL);
-        text(pose, "×" + quantity, x + 20, y + 11, w - 22, 0x555555);
-        if (my >= 76 && my < listBottom() && CompactUi.hit(mx, my, x, y, w, 24))
+        CompactUi.nameAndQuantity(pose, font, input.what().getDisplayName().getString(), "×" + quantity,
+                x + 20, y + 4, w - 22, 0x303030, 0x555555);
+        if (my >= LIST_TOP && my < listBottom() && CompactUi.hit(mx, my, x, y, w, INPUT_ROW))
             tooltip = List.of(input.what().getDisplayName(), Component.literal("×" + quantity));
     }
-    private void row(PoseStack pose, PatternEncoder.Entry entry, int number, int top, int mx, int my) {
+    private void row(PoseStack pose, PatternEncoder.Entry entry, int number, int top, int mx, int my, float partial) {
         int l = left() + 10, w = span() - 20;
         fill(pose, l, top + rowHeight(entry) - 2, l + w, top + rowHeight(entry) - 1, 0xFFAAAAAA);
-        text(pose, number + ". " + (entry.crafting ? "合成样板" : "处理样板 / " + entry.node.selected.machine()), l, top + 2, w - 22, 0x555555);
+        text(pose, entry.crafting ? craftingTitle(number) : number + ". 处理样板 / " + entry.node.selected.machine(),
+                l, top + 4, w - (entry.crafting ? 54 : 22), 0x555555);
         if (entry.problem != null) { text(pose, entry.problem, l, top + 18, w, 0xAA3333); return; }
         if (!entry.crafting) {
             CompactUi.button(pose, l + w - 18, top + 1, 18, 16, CompactUi.hit(mx, my, l + w - 18, top + 1, 18, 16), true);
             drawCenteredString(pose, font, "#", l + w - 9, top + 5, 0xFFFFFF);
-            if (my >= 76 && my < listBottom() && CompactUi.hit(mx, my, l + w - 18, top + 1, 18, 16)) tooltip = List.of(Component.literal("输入数量"));
+            if (my >= LIST_TOP && my < listBottom() && CompactUi.hit(mx, my, l + w - 18, top + 1, 18, 16)) tooltip = List.of(Component.literal("输入数量"));
             var inputs = entry.inputs(); int cell = inputWidth() / columns();
-            for (int i = 0; i < inputs.size(); i++) input(pose, inputs.get(i), l + i % columns() * cell, top + 21 + i / columns() * 26, cell, mx, my);
+            for (int i = 0; i < inputs.size(); i++) input(pose, inputs.get(i), l + i % columns() * cell, top + 21 + i / columns() * INPUT_ROW, cell, mx, my);
         } else {
+            int toggleX = substitutionX(number);
+            renderSubstitution(pose, substitutionButton(entry, false, toggleX, top + 1), mx, my, partial);
+            renderSubstitution(pose, substitutionButton(entry, true, toggleX + 18, top + 1), mx, my, partial);
             for (int i = 0; i < 9; i++) {
                 int x = l + i % 3 * 18, y = top + 20 + i / 3 * 18; CompactUi.slot(pose, x, y);
                 if (!entry.node.selected.inputs().get(i).isEmpty()) ingredient(pose, entry.node.selectedInput(i), x + 1, y + 1, mx, my);
             }
-            String flags = (preview.menu().isSubstitute() ? "物品替换" : "") + (preview.menu().isSubstituteFluids() ? " 流体替换" : "");
-            text(pose, flags, l + 60, top + 23, Math.max(1, inputWidth() - 65), 0x555555);
-            if (!flags.isBlank() && CompactUi.hit(mx, my, l + 60, top + 20, Math.max(1, inputWidth() - 65), 35))
-                tooltip = List.of(Component.literal(flags.trim()), Component.literal("替代材料由 AE2 终端规则确定"));
         }
-        int x = left() + span() - 114, y = top + 25;
+        int x = entry.crafting ? l + 76 : l + inputWidth() + 18, y = top + 25;
+        int outputWidth = left() + span() - x - 10;
         text(pose, "→", x - 18, y + 4, 16, 0x555555);
         ingredient(pose, entry.output(), x, y, mx, my);
-        text(pose, entry.output().name(), x + 20, y, 82, 0x303030);
-        text(pose, "×" + entry.output().quantity(), x + 20, y + 12, 82, 0x555555);
-        if (my >= 76 && my < listBottom() && CompactUi.hit(mx, my, x, y, 102, 26))
+        CompactUi.nameAndQuantity(pose, font, entry.output().name(), "×" + entry.output().quantity(),
+                x + 20, y + 4, outputWidth - 20, 0x303030, 0x555555);
+        if (my >= LIST_TOP && my < listBottom() && CompactUi.hit(mx, my, x, y, outputWidth, 20))
             tooltip = entry.output().tooltip(TreeJeiPlugin.runtime.getIngredientManager());
     }
     @Override public void render(PoseStack pose, int mouseX, int mouseY, float partial) {
@@ -185,34 +228,36 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
         CompactUi.panel(pose, l, 8, w, height - 16);
         ingredient(pose, target(), l + 10, 18, -1, -1);
         text(pose, target().name(), l + 32, 22, w - 65, 0x303030);
-        text(pose, "深度", l + 10, 50, 24, 0x404040);
-        text(pose, "有效 " + Math.min(depth, maximum) + "   样板 " + preview.entries().size(), l + 146, 50, w - 156, 0x555555);
         var window = minecraft.getWindow(); double scale = window.getGuiScale();
         RenderSystem.enableScissor((int)((l + 6) * scale), (int)((height - listBottom()) * scale),
-                (int)((w - 12) * scale), (int)(Math.max(1, listBottom() - 76) * scale));
-        int top = 76 - scroll, number = 1;
+                (int)((w - 12) * scale), (int)(Math.max(1, listBottom() - LIST_TOP) * scale));
+        int top = LIST_TOP - scroll, number = 1;
         for (var entry : preview.entries()) {
-            int h = rowHeight(entry); if (top + h > 76 && top < listBottom()) row(pose, entry, number, top, mouseX, mouseY);
+            int h = rowHeight(entry); if (top + h > LIST_TOP && top < listBottom()) row(pose, entry, number, top, mouseX, mouseY, partial);
             top += h; number++;
         }
         RenderSystem.disableScissor();
         if (maxScroll() > 0) {
-            int track = listBottom() - 76, thumb = Math.max(8, track * track / (track + maxScroll()));
-            int y = 76 + (track - thumb) * scroll / maxScroll(); fill(pose, l + w - 6, y, l + w - 4, y + thumb, 0xFF555555);
+            int track = listBottom() - LIST_TOP, thumb = Math.max(8, track * track / (track + maxScroll()));
+            int y = LIST_TOP + (track - thumb) * scroll / maxScroll(); fill(pose, l + w - 6, y, l + w - 4, y + thumb, 0xFF555555);
         }
         if (!preview.issues().isEmpty()) {
-            var issue = currentIssue().orElseThrow(); int y = height - 55;
+            var issue = currentIssue().orElseThrow(); int y = height - 68;
             ingredient(pose, issue.node().target, l + 10, y, -1, -1);
             text(pose, (problemIndex + 1) + "/" + preview.issues().size() + " " + issue.message(), l + 32, y, w - 42, 0xAA3333);
             text(pose, issue.path(), l + 32, y + 13, w - 42, 0x555555);
             if (CompactUi.hit(mouseX, mouseY, l + 6, y - 2, w - 12, 38))
                 tooltip = List.of(Component.literal(issue.message()), Component.literal(issue.path()));
-        } else if (!error.isEmpty()) text(pose, error, l + 10, height - 45, w - 20, 0xAA3333);
+        } else if (!error.isEmpty()) text(pose, error, l + 10, height - 61, w - 20, 0xAA3333);
         super.render(pose, mouseX, mouseY, partial);
         if (!tooltip.isEmpty()) renderComponentTooltip(pose, tooltip, mouseX, mouseY);
     }
     @Override public boolean isPauseScreen() { return false; }
-    @Override public void onClose() { RecipeInteractions.arm(this); }
+    @Override public void onClose() {
+        if (minecraft.player != null && minecraft.player.containerMenu == preview.menu())
+            RecipeInteractions.restoreJei(jeiContext);
+        else minecraft.setScreen(null);
+    }
 
     private static final class AmountScreen extends Screen {
         private final PatternPreviewScreen parent;
@@ -228,21 +273,25 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
                 inputs.add(i); values.put(i, Long.toString(entry.amounts.getOrDefault(i, entry.node.selectedInput(i).amount())));
             }
         }
+        private String inputName(int slot) {
+            return font.plainSubstrByWidth(entry.node.selectedInput(slot).name(), Math.max(0, Math.min(215, width - 102)));
+        }
         private int pageSize() { return Math.max(1, (height - 115) / 26); }
         private void capture() { boxes.forEach((index, box) -> values.put(index, box.getValue())); }
         @Override protected void init() {
-            clearWidgets(); boxes.clear(); int left = Math.max(8, (width - 400) / 2);
+            clearWidgets(); boxes.clear(); int left = Math.max(8, (width - 314) / 2);
             for (int row = 0; row < pageSize(); row++) {
                 int index = page * pageSize() + row; if (index >= inputs.size()) break;
                 int input = inputs.get(index);
-                var box = new EditBox(font, left + Math.min(260, width - 150), 47 + row * 26, 110, 20, Component.literal("输入数量"));
+                int quantityX = left + font.width(inputName(input)) + 4;
+                var box = new EditBox(font, quantityX, 47 + row * 26, 82, 20, Component.literal("输入数量"));
                 box.setMaxLength(10); box.setFilter(s -> s.matches("[0-9]*")); box.setValue(values.get(input));
                 boxes.put(input, addRenderableWidget(box));
             }
             addRenderableWidget(new Button(left, height - 37, 75, 20, Component.literal("恢复原量"), b -> {
                 for (int input : inputs) values.put(input, Long.toString(entry.node.selectedInput(input).amount())); init();
             }));
-            addRenderableWidget(new Button(left + Math.min(280, width - 120), height - 37, 90, 20, Component.literal("保存数量"), b -> save()));
+            addRenderableWidget(new Button(left + 82, height - 37, 90, 20, Component.literal("保存数量"), b -> save()));
         }
         @Override public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
             if (mouseY < 44 || mouseY >= height - 65) return false;
@@ -266,13 +315,13 @@ public final class PatternPreviewScreen extends Screen implements PatternConfirm
             onClose();
         }
         @Override public void render(PoseStack pose, int mouseX, int mouseY, float partial) {
-            renderBackground(pose); int left = Math.max(8, (width - 400) / 2);
-            CompactUi.panel(pose, left - 5, 6, Math.min(400, width - 6), height - 12);
+            renderBackground(pose); int left = Math.max(8, (width - 314) / 2);
+            CompactUi.panel(pose, left - 5, 6, Math.min(314, width - 6), height - 12);
             font.draw(pose, title, (width - font.width(title)) / 2f, 12, 0x404040);
-            font.draw(pose, font.plainSubstrByWidth("输出固定：" + entry.output().name() + " × " + entry.output().quantity(), width - 16), left, 29, 0x404040);
+            font.draw(pose, font.plainSubstrByWidth("输出固定：" + entry.output().name() + " ×" + entry.output().quantity(), width - 16), left, 29, 0x404040);
             for (int row = 0; row < pageSize(); row++) {
                 int index = page * pageSize() + row; if (index >= inputs.size()) break;
-                font.draw(pose, font.plainSubstrByWidth(entry.node.selectedInput(inputs.get(index)).name(), Math.max(30, Math.min(250, width - 160))), left, 53 + row * 26, 0x404040);
+                font.draw(pose, inputName(inputs.get(index)), left, 53 + row * 26, 0x404040);
             }
 
             font.draw(pose, error, left, height - 55, 0xAA3333); super.render(pose, mouseX, mouseY, partial);

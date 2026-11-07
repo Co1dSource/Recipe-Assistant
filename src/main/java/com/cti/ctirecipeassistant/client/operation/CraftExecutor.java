@@ -7,7 +7,6 @@ import com.cti.ctirecipeassistant.recipe.*;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
-import mezz.jei.api.recipe.RecipeIngredientRole;
 import mezz.jei.api.recipe.transfer.IRecipeTransferHandler;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -27,6 +26,7 @@ import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.fml.common.Mod;
 import org.lwjgl.glfw.GLFW;
 import java.util.*;
+import java.util.function.ToLongFunction;
 
 @Mod.EventBusSubscriber(modid = CtiRecipeAssistant.MOD_ID, value = Dist.CLIENT)
 public final class CraftExecutor {
@@ -41,75 +41,113 @@ public final class CraftExecutor {
     private static boolean cancel;
     private static ItemStack expected = ItemStack.EMPTY, beforeCarried = ItemStack.EMPTY, beforeDestination = ItemStack.EMPTY;
     private static ItemStack[] beforeGrid;
-    private static final Map<IRecipeLayoutDrawable<?>, Prepared> previews = new IdentityHashMap<>();
-    private static AbstractContainerMenu cachedMenu;
-    private static Screen cachedScreen;
-    private static ItemStack[] cachedInventory;
-    private static Prepared cached;
-    private static long cachedRevision;
-    private static long clientTick, networkTick = -1;
-    private static Map<ItemIdentity, Long> networkAtTick = Map.of(), cachedNetwork = Map.of();
-
     private CraftExecutor() {}
     public static boolean busy() { return task != null; }
     public static State state() { return state; }
     public static void cancel() { if (busy()) cancel = true; }
 
-    public static RecipeOperationDispatcher.Availability check(IRecipeLayoutDrawable<?> layout, Screen parent) {
-        if (busy() || OptionalIntegrations.busy() || SingleRecipeTransfer.busy()) return blocked("正在执行一键合成任务");
-        var mc = Minecraft.getInstance();
-        if (!(parent instanceof AbstractContainerScreen<?> screen) || mc.player == null
-                || mc.player.containerMenu != screen.getMenu()) return blocked("需要打开有效的 3×3 工作台");
-        if (!RecipeTypes.CRAFTING.equals(layout.getRecipeCategory().getRecipeType())
-                || !(layout.getRecipe() instanceof CraftingRecipe recipe) || !recipe.canCraftInDimensions(3, 3))
-            return blocked("一键合成只支持 3×3 工作台配方");
-        var menu = screen.getMenu();
-        if (!CraftingInventory.supports(menu)) return blocked("当前菜单尚未支持逐层合成");
-        if (!menu.getCarried().isEmpty()) return blocked("请先放下鼠标光标携带的物品");
-        String unavailable = OptionalIntegrations.unavailable(menu);
-        if (unavailable != null) return blocked(unavailable);
-        var source = CraftingInventory.of(menu, recipe);
-        if (networkTick != clientTick || cachedMenu != menu) {
-            networkAtTick = source.networkStock(); networkTick = clientTick;
+    /** One quantity dialog's route and latest synchronized inventory. */
+    public static final class Session {
+        private final AbstractContainerMenu menu;
+        private final RecipeNode root;
+        private final JeiRecipeIndex index;
+        private final CraftingInventory source;
+        private final String routeProblem;
+        private ItemStack[] previousSlots;
+        private Map<ItemIdentity, Long> network = Map.of();
+        private final Map<Object, Long> available = new HashMap<>();
+        private long maximum;
+        private String problem;
+        private boolean maximumKnown;
+
+        public Session(Screen parent, RecipeNode root, JeiRecipeIndex index) {
+            this.root = root;
+            this.index = index;
+            menu = parent instanceof AbstractContainerScreen<?> container ? container.getMenu() : null;
+            var layout = root.selected == null ? null : index.layout(root.selected.id());
+            if (menu == null || !CraftingInventory.supports(menu)) {
+                source = null; routeProblem = "需要打开有效的 3×3 工作台";
+            } else if (root.selected == null) {
+                source = null; routeProblem = "请先选择工作台配方";
+            } else if (layout == null || !(layout.getRecipe() instanceof CraftingRecipe recipe)
+                    || !recipe.canCraftInDimensions(3, 3)) {
+                source = null; routeProblem = "一键合成只支持 3×3 工作台配方";
+            } else {
+                source = CraftingInventory.of(menu, recipe);
+                routeProblem = validateLayouts(root, index, menu, new int[1]);
+            }
         }
-        var inventory = snapshot(menu);
-        if (cachedMenu != menu || cachedScreen != mc.screen
-                || cachedRevision != RecipePreferences.revision() || !same(inventory, cachedInventory)
-                || !cachedNetwork.equals(networkAtTick)) {
-            previews.clear(); cachedMenu = menu; cachedScreen = mc.screen; cachedInventory = inventory;
-            cachedRevision = RecipePreferences.revision(); cachedNetwork = networkAtTick;
+
+        public long maximum() { return maximum; }
+        public String problem() { return problem; }
+
+        public String oneCraftProblem() {
+            refreshStock();
+            return problem;
         }
-        cached = previews.computeIfAbsent(layout, key -> prepare(key, source, networkAtTick));
-        cachedRevision = RecipePreferences.revision();
-        return cached.reason == null ? new RecipeOperationDispatcher.Availability(
-                RecipeOperationDispatcher.ButtonState.ENABLED, null) : blocked(cached.reason);
+
+        public void refresh() {
+            refreshStock();
+            if (problem != null || maximumKnown) return;
+            maximumKnown = true;
+            var first = prepare(1);
+            problem = preview(index.layout(first.steps.get(0).selected.id()), menu, first.steps.get(0));
+            if (problem != null) return;
+
+            long output = MaterialRequirements.rootOutput(root);
+            long low = 1, high = CraftPlanner.MAX_STEPS;
+            while (low < high) {
+                long mid = (low + high + 1) / 2;
+                if (prepare(mid * output).reason == null) low = mid;
+                else high = mid - 1;
+            }
+            maximum = Math.min(Integer.MAX_VALUE, low * output);
+        }
+
+        private void refreshStock() {
+            var player = Minecraft.getInstance().player;
+            String unavailable = routeProblem;
+            if (unavailable == null) {
+                if (player == null || player.containerMenu != menu) unavailable = "工作台已关闭";
+                else if (busy() || OptionalIntegrations.busy() || SingleRecipeTransfer.busy()) unavailable = "正在执行物品操作";
+                else if (!menu.getCarried().isEmpty()) unavailable = "请先放下光标携带的物品";
+                else unavailable = OptionalIntegrations.unavailable(menu);
+            }
+            if (unavailable != null) {
+                problem = unavailable; maximum = 0; maximumKnown = false; previousSlots = null;
+                return;
+            }
+            var slots = snapshot(menu);
+            var stock = source.networkStock();
+            if (same(slots, previousSlots) && network.equals(stock)) return;
+            previousSlots = slots; network = stock; available.clear();
+            maximum = 0; maximumKnown = false;
+            problem = prepare(1).reason;
+        }
+
+        private Prepared prepare(long quantity) {
+            ToLongFunction<TreeIngredient> stock = ingredient -> available.computeIfAbsent(
+                    MaterialRequirements.identity(ingredient), key -> source.available(ingredient, network));
+            var plan = CraftPlanner.plan(root, stock, quantity);
+            String reason = plan.reason();
+            if (reason == null) reason = checkSpace(source, plan.steps(), network);
+            return new Prepared(menu, source, plan.steps(), index, root.target.name(), reason);
+        }
+
+        public boolean start(long quantity) {
+            refresh();
+            if (quantity <= 0 || quantity > maximum) return false;
+            var prepared = prepare(quantity);
+            if (prepared.reason != null) { problem = prepared.reason; return false; }
+            task = prepared; completed = 0; cancel = false; state = State.TRANSFERRING;
+            return true;
+        }
     }
 
-    private static RecipeOperationDispatcher.Availability blocked(String reason) {
-        return new RecipeOperationDispatcher.Availability(RecipeOperationDispatcher.ButtonState.DISABLED_REASON,
-                Component.literal(reason));
-    }
-
-    private static Prepared prepare(IRecipeLayoutDrawable<?> layout, CraftingInventory source, Map<ItemIdentity, Long> network) {
-        var menu = source.menu();
-        var index = new JeiRecipeIndex(TreeJeiPlugin.runtime, true);
-        var candidate = index.readLayout(layout);
-        var output = layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.OUTPUT).stream()
-                .flatMap(slot -> slot.getDisplayedIngredient().stream()).findFirst();
-        if (output.isEmpty()) return new Prepared(menu, source, List.of(), index, "", "配方未提供目标产物");
-        var target = TreeIngredient.of(output.get(), TreeJeiPlugin.runtime.getIngredientManager());
-        var root = new RecipeNode(target, null, index, new RecipePreferences());
-        root.useRecipe(candidate);
-        com.cti.ctirecipeassistant.client.jei.RecipeInteractions.applyCurrentCuts(root);
-        var plan = CraftPlanner.plan(root, ingredient -> source.available(ingredient, network));
-        if (plan.reason() != null) return new Prepared(menu, source, List.of(), index, target.name(), plan.reason());
-        String reason = validateLayouts(root, index, menu);
-        if (reason == null) reason = checkSpace(source, plan.steps(), network);
-        if (reason == null) reason = preview(index.layout(plan.steps().get(0).selected.id()), menu, plan.steps().get(0));
-        return new Prepared(menu, source, plan.steps(), index, target.name(), reason);
-    }
-
-    private static String validateLayouts(RecipeNode node, JeiRecipeIndex index, AbstractContainerMenu menu) {
+    private static String validateLayouts(RecipeNode node, JeiRecipeIndex index, AbstractContainerMenu menu, int[] visited) {
+        if (node.depth >= 64) return null;
+        if (++visited[0] > 4096) return "配方树超过 4096 节点，请缩小选择范围";
+        node.load();
         if (node.selected == null) return null;
         var layout = index.layout(node.selected.id());
         if (layout == null || !RecipeTypes.CRAFTING.equals(layout.getRecipeCategory().getRecipeType())
@@ -129,7 +167,7 @@ public final class CraftExecutor {
         for (var child : node.children) {
             if (!(child.target.typed().getIngredient() instanceof ItemStack) || child.target.amount() != 1)
                 return child.target.name() + "：不是普通工作台单槽物品输入";
-            String reason = validateLayouts(child, index, menu);
+            String reason = validateLayouts(child, index, menu, visited);
             if (reason != null) return reason;
         }
         return null;
@@ -201,31 +239,9 @@ public final class CraftExecutor {
         }
     }
 
-    public static void start(ClientRecipeOperation<?> operation) {
-        if (busy()) return;
-        var mc = Minecraft.getInstance();
-        if (!(operation.parentScreen() instanceof AbstractContainerScreen<?> screen)
-                || mc.player == null || screen.getMenu() != mc.player.containerMenu
-                || !CraftingInventory.supports(screen.getMenu())) return;
-        // The generic helper below keeps the recipe/category pair's type together.
-        startLayout(operation);
-    }
-
-    private static <R> void startLayout(ClientRecipeOperation<R> operation) {
-        state = State.PLANNING;
-        var layout = TreeJeiPlugin.runtime.getRecipeManager().createRecipeLayoutDrawable(operation.category(),
-                operation.recipe(), TreeJeiPlugin.runtime.getJeiHelpers().getFocusFactory().getEmptyFocusGroup());
-        if (layout.isEmpty()) { finish(State.FAILED, "JEI 无法建立当前配方布局"); return; }
-        cached = null; previews.clear();
-        var availability = check(layout.get(), operation.parentScreen());
-        if (!availability.enabled()) { finish(State.FAILED, availability.reason().getString()); return; }
-        task = cached; completed = 0; cancel = false; state = State.TRANSFERRING;
-    }
-
     @SubscribeEvent
     public static void tick(TickEvent.ClientTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
-        clientTick++;
         if (!busy()) return;
         var mc = Minecraft.getInstance();
         if (mc.player == null || mc.getConnection() == null || mc.player.containerMenu != task.menu
@@ -345,34 +361,14 @@ public final class CraftExecutor {
     private static void finish(State end, String reason) {
         String progress = task == null ? "" : " [" + completed + "/" + task.steps.size() + "] "
                 + task.target + (completed < task.steps.size() ? "；当前：" + task.steps.get(completed).target.name() : "");
-        state = end; task = null; cached = null; previews.clear();
+        state = end; task = null;
         var mc = Minecraft.getInstance();
         if (mc.player != null) mc.gui.getChat().addMessage(Component.literal("一键合成：" + reason + progress));
     }
 
-    @SubscribeEvent
-    public static void render(ScreenEvent.Render.Post event) {
-        if (!busy()) return;
-        var mc = Minecraft.getInstance(); var screen = event.getScreen();
-        var current = task.steps.get(completed);
-        String phase = switch (state) {
-            case TRANSFERRING -> "填入配方";
-            case CRAFTING -> "取得产物";
-            case WAITING_SYNC -> "等待同步";
-            default -> "检查计划";
-        };
-        String text = task.target + "  " + completed + "/" + task.steps.size() + "  "
-                + "当前：" + current.target.name() + "（" + current.selected.machine() + "）  " + phase;
-        var pose = event.getPoseStack(); pose.pushPose(); pose.translate(0, 0, 700);
-        Screen.fill(pose, 0, 0, screen.width, 26, 0xEE303030);
-        Screen.drawString(pose, mc.font, mc.font.plainSubstrByWidth(text, Math.max(20, screen.width - 85)), 5, 8, 0xFFFFFF);
-        Screen.drawString(pose, mc.font, cancel ? "正在取消" : "取消", screen.width - 78, 8, 0xFFE0A0);
-        pose.popPose();
-    }
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void mouse(ScreenEvent.MouseButtonPressed.Pre event) {
         if (!busy()) return;
-        if (event.getMouseY() < 26 && event.getMouseX() >= event.getScreen().width - 80) cancel();
         event.setCanceled(true);
     }
     @SubscribeEvent(priority = EventPriority.HIGHEST)

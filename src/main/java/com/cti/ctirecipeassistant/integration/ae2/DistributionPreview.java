@@ -4,6 +4,8 @@ import appeng.client.gui.me.patternaccess.PatternAccessTermScreen;
 import com.cti.ctirecipeassistant.client.gui.CompactUi;
 import com.cti.ctirecipeassistant.client.operation.*;
 import com.mojang.blaze3d.vertex.PoseStack;
+import mezz.jei.common.Internal;
+import mezz.jei.gui.elements.GuiIconButtonSmall;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -14,7 +16,7 @@ import java.util.*;
 
 /** Native terminal entry and a decision-only popup. No inventory/provider management screen. */
 public final class DistributionPreview {
-    private static final int BUTTON_SIZE=12;
+    private static final int BUTTON_SIZE=13;
     private static DistributionPreview open;
     private final PatternAccessTermScreen<?> terminal;
     private final PatternDistribution.Row row;
@@ -32,8 +34,18 @@ public final class DistributionPreview {
     public static void dismiss(){open=null;}
     public static void updated(PatternAccessTermScreen<?> terminal){if(open!=null && open.terminal==terminal)open.dirty=true;}
     private static int buttonX(PatternAccessTermScreen<?> terminal){return terminal.getGuiLeft()+175;}
-    private static int buttonY(PatternAccessTermScreen<?> terminal){return terminal.getGuiTop();}
+    private static int buttonY(PatternAccessTermScreen<?> terminal){return terminal.getGuiTop()+3;}
     private static boolean available(){return !PatternDistributor.busy() && !CraftExecutor.busy() && !PatternEncoder.busy() && !SingleRecipeTransfer.busy();}
+    private static GuiIconButtonSmall distributionButton(PatternAccessTermScreen<?> terminal) {
+        var textures = Internal.getTextures();
+        var button = new GuiIconButtonSmall(buttonX(terminal), buttonY(terminal), BUTTON_SIZE, BUTTON_SIZE,
+                textures.getArrowNext(), ignored -> {
+                    String error = PatternDistributor.start(terminal);
+                    if (!error.isEmpty()) Minecraft.getInstance().gui.getChat().addMessage(Component.literal(error));
+                }, textures);
+        button.active = available();
+        return button;
+    }
     private static void renderTooltip(Screen screen,PoseStack pose,List<Component> lines,int x,int y){
         pose.pushPose();pose.translate(0,0,-350);screen.renderComponentTooltip(pose,lines,x,y);pose.popPose();
     }
@@ -51,8 +63,7 @@ public final class DistributionPreview {
         var pose=event.getPoseStack();pose.pushPose();pose.translate(0,0,700);
         if(open==null){
             int x=buttonX(terminal),y=buttonY(terminal);boolean hover=CompactUi.hit(event.getMouseX(),event.getMouseY(),x,y,BUTTON_SIZE,BUTTON_SIZE);
-            CompactUi.button(pose,x,y,BUTTON_SIZE,BUTTON_SIZE,hover,available());int color=available()?0xFFF0F0F0:0xFF999999;
-            for(int i=0;i<4;i++)Screen.fill(pose,x+4+i,y+3+i,x+5+i,y+10-i,color);
+            distributionButton(terminal).render(pose,event.getMouseX(),event.getMouseY(),event.getPartialTick());
             if(hover)renderTooltip(terminal,pose,List.of(Component.literal("自动分发")),event.getMouseX(),event.getMouseY());
         }else if(open.terminal==terminal){
             if(open.dirty)PatternDistributor.refreshChoices();
@@ -94,10 +105,7 @@ public final class DistributionPreview {
             event.setCanceled(true);return;
         }
         if(!PatternDistributor.busy() && event.getButton()==0 && CompactUi.hit(event.getMouseX(),event.getMouseY(),buttonX(terminal),buttonY(terminal),BUTTON_SIZE,BUTTON_SIZE)){
-            if(available()){
-                String error=PatternDistributor.start(terminal);
-                if(!error.isEmpty())Minecraft.getInstance().gui.getChat().addMessage(Component.literal(error));
-            }
+            distributionButton(terminal).mouseClicked(event.getMouseX(),event.getMouseY(),event.getButton());
             event.setCanceled(true);
         }
     }

@@ -18,15 +18,21 @@ import net.minecraft.world.inventory.CraftingMenu;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.CraftingContainer;
 import net.minecraft.world.inventory.ResultSlot;
+import net.minecraft.world.item.crafting.CraftingRecipe;
 
 /** A pending client request. Creating this record never transfers ingredients. */
 public record ClientRecipeOperation<R>(Mode mode, R recipe, IRecipeCategory<R> category,
                                       IRecipeSlotsView slotsView, Rect2i recipeArea,
                                       RecipeCandidate candidate, TreeIngredient target,
                                       Screen parentScreen) {
+    public static boolean isThreeByThreeCrafting(IRecipeLayoutDrawable<?> layout) {
+        return RecipeTypes.CRAFTING.equals(layout.getRecipeCategory().getRecipeType())
+                && layout.getRecipe() instanceof CraftingRecipe recipe && recipe.canCraftInDimensions(3, 3);
+    }
+
     public enum Mode {
-        ONE_KEY_CRAFT("一键合成配方树"),
-        BATCH_PATTERN_ENCODING("批量编码配方树"),
+        ONE_KEY_CRAFT("一键合成"),
+        BATCH_PATTERN_ENCODING("批量编码"),
         HIDDEN("");
 
         private final String tooltip;
@@ -38,8 +44,10 @@ public record ClientRecipeOperation<R>(Mode mode, R recipe, IRecipeCategory<R> c
             var player = Minecraft.getInstance().player;
             if (player == null || player.containerMenu != screen.getMenu() || TreeJeiPlugin.runtime == null)
                 return HIDDEN;
-            return fromMenu(screen.getMenu(), layout.getRecipeCategory(),
+            var mode = fromMenu(screen.getMenu(), layout.getRecipeCategory(),
                     TreeJeiPlugin.runtime.getRecipeTransferManager());
+            if (mode == ONE_KEY_CRAFT && !isThreeByThreeCrafting(layout)) return HIDDEN;
+            return mode;
         }
 
         public static <R> Mode fromMenu(AbstractContainerMenu menu, IRecipeCategory<R> category,

@@ -38,11 +38,25 @@ import java.util.*;
 import java.util.stream.Stream;
 
 public final class PatternEncoder {
+    record Substitutions(boolean items, boolean fluids) {
+        boolean matches(PatternEncodingTermMenu menu) {
+            return items == menu.isSubstitute() && fluids == menu.isSubstituteFluids();
+        }
+        void request(PatternEncodingTermMenu menu) {
+            if (items != menu.isSubstitute()) menu.setSubstitute(items);
+            if (fluids != menu.isSubstituteFluids()) menu.setSubstituteFluids(fluids);
+        }
+        boolean matches(AECraftingPattern pattern) {
+            return items == pattern.canSubstitute() && fluids == pattern.canSubstituteFluids();
+        }
+    }
+
     public static final class Entry {
         public final RecipeNode node;
         public final IRecipeLayoutDrawable<?> layout;
         public final boolean crafting;
         public final Map<Integer, Long> amounts = new HashMap<>();
+        Substitutions substitutions;
         public String problem;
         Entry(RecipeNode node, IRecipeLayoutDrawable<?> layout, RecipePreferences preferences) {
             this.node = node; this.layout = layout;
@@ -55,7 +69,8 @@ public final class PatternEncoder {
                 }
             }
         }
-        public String amountKey(int input) { return "pattern-amount|" + node.selected.id() + "|" + node.target.key() + "|" + input; }
+        public String amountKey(int input) { return node.amountKey(input); }
+        String patternKey() { return node.selected.id() + "|" + node.target.key(); }
         public PatternEncodingSlots slots() { return new PatternEncodingSlots(layout.getRecipeSlotsView(), node, amounts); }
         public TreeIngredient output() { return node.selected.output(node.target.key()); }
         public List<GenericStack> inputs() {
@@ -68,17 +83,17 @@ public final class PatternEncoder {
     }
     public record Preview(PatternEncodingTermMenu menu, Screen terminal, TreeIngredient target,
                           List<Entry> entries, List<PatternPlanner.Issue> issues, RecipePreferences preferences,
-                          RecipeNode root, JeiRecipeIndex index, int depth) {
+                          RecipeNode root, JeiRecipeIndex index) {
         public List<String> problems() { return issues.stream().map(PatternPlanner.Issue::message).toList(); }
     }
-    private enum State { NEXT, REFILL, TRANSFER, ENCODE, PICKUP, DEPOSIT, PAUSED }
+    private enum State { WAIT_SUBSTITUTION, NEXT, REFILL, TRANSFER, ENCODE, PICKUP, DEPOSIT, PAUSED }
     private static Preview task;
     private static State state, resume;
     private static int completed, ticks, stateId, destination, beforeBlank, beforeSupply;
     private static Slot blank, output;
     private static List<Slot> playerSlots;
     private static ItemStack encoded = ItemStack.EMPTY, beforeDestination = ItemStack.EMPTY;
-    private static boolean cancelling, batchSubstitute, batchSubstituteFluids;
+    private static boolean cancelling;
     private static String message = "";
     private PatternEncoder() {}
     public static boolean busy() { return task != null; }
@@ -89,20 +104,22 @@ public final class PatternEncoder {
     }
 
     public static Preview prepare(ClientRecipeOperation<?> operation, RecipeNode root, JeiRecipeIndex index,
-                                   RecipePreferences preferences, int depth) {
+                                   RecipePreferences preferences) {
         var screen = (AbstractContainerScreen<?>) operation.parentScreen();
         var menu = (PatternEncodingTermMenu) screen.getMenu();
-        var plan = PatternPlanner.plan(root, depth);
+        var plan = PatternPlanner.plan(root);
         var problems = new ArrayList<>(plan.issues());
         var entries = new ArrayList<Entry>();
+        var substitutions = new Substitutions(menu.isSubstitute(), menu.isSubstituteFluids());
         for (var node : plan.steps()) {
             var entry = new Entry(node, index.layout(node.selected.id()), preferences);
+            entry.substitutions = substitutions;
             entry.problem = validate(entry, menu);
             if (entry.problem != null) problems.add(new PatternPlanner.Issue(node, PatternPlanner.ProblemType.UNSUPPORTED,
                     node.target.name() + "：" + entry.problem, node.target.name()));
             entries.add(entry);
         }
-        return new Preview(menu, screen, root.target, List.copyOf(entries), List.copyOf(problems), preferences, root, index, depth);
+        return new Preview(menu, screen, root.target, List.copyOf(entries), List.copyOf(problems), preferences, root, index);
     }
 
     private static String validate(Entry entry, PatternEncodingTermMenu menu) {
@@ -159,9 +176,8 @@ public final class PatternEncoder {
         playerSlots = Stream.concat(preview.menu.getSlots(SlotSemantics.PLAYER_INVENTORY).stream(),
                 preview.menu.getSlots(SlotSemantics.PLAYER_HOTBAR).stream())
                 .filter(s -> !preview.menu.isPlayerInventorySlotLocked(s.getContainerSlot())).toList();
-        batchSubstitute = preview.menu.isSubstitute();
-        batchSubstituteFluids = preview.menu.isSubstituteFluids();
-        task = preview; completed = 0; cancelling = false; encoded = ItemStack.EMPTY; state = State.NEXT;
+        task = preview; completed = 0; cancelling = false; encoded = ItemStack.EMPTY; ticks = 0;
+        state = State.NEXT;
         mc.setScreen(preview.terminal);
         return null;
     }
@@ -173,6 +189,12 @@ public final class PatternEncoder {
         if (mc.player == null || mc.getConnection() == null || mc.player.containerMenu != task.menu
                 || !task.menu.isValidMenu() || !task.menu.isPowered() || TreeJeiPlugin.runtime == null) {
             finish("终端已关闭、断网或失效，保留实际物品状态"); return;
+        }
+        if (state == State.WAIT_SUBSTITUTION) {
+            if (cancelling) finish("已取消，未编码当前样板");
+            else if (current().substitutions.matches(task.menu)) state = State.NEXT;
+            else if (++ticks >= 100) finish("等待 AE2 替换设置同步超时，未编码当前样板");
+            return;
         }
         if (state == State.PAUSED) {
             if (cancelling && task.menu.getCarried().isEmpty()) {
@@ -231,6 +253,10 @@ public final class PatternEncoder {
         }
         if (!AEItems.BLANK_PATTERN.isSameAs(blank.getItem())) { finish("空白样板槽内容异常"); return; }
         var entry = current();
+        if (entry.crafting && !entry.substitutions.matches(task.menu)) {
+            entry.substitutions.request(task.menu);
+            state = State.WAIT_SUBSTITUTION; ticks = 0; return;
+        }
         // A pre-existing exact layout needs no transfer and no artificial sync delay.
         if (ready(entry)) { state = State.TRANSFER; ticks = 0; return; }
         var transfer = handler(entry, task.menu);
@@ -258,7 +284,7 @@ public final class PatternEncoder {
 
     private static boolean ready(Entry entry) {
         var menu = task.menu;
-        if (menu.isSubstitute() != batchSubstitute || menu.isSubstituteFluids() != batchSubstituteFluids) return false;
+        if (entry.crafting && !entry.substitutions.matches(menu)) return false;
         if (menu.getMode() != (entry.crafting ? EncodingMode.CRAFTING : EncodingMode.PROCESSING)) return false;
         if (entry.crafting) {
             for (int i = 0; i < 9; i++) {
@@ -282,7 +308,7 @@ public final class PatternEncoder {
         var target = GenericEntryStackHelper.ingredientToStack(entry.output().typed());
         if (decoded == null || !Objects.equals(decoded.getPrimaryOutput(), target)) return false;
         if (entry.crafting) {
-            if (!(decoded instanceof AECraftingPattern pattern) || !matchesSubstitution(pattern)) return false;
+            if (!(decoded instanceof AECraftingPattern pattern) || !entry.substitutions.matches(pattern)) return false;
             var actual = pattern.getSparseInputs();
             for (int i = 0; i < 9; i++) {
                 var expected = entry.node.selected.inputs().get(i).isEmpty() ? null
@@ -296,9 +322,6 @@ public final class PatternEncoder {
         return inputs.equals(entry.inputs()) && decoded.getOutputs().length == 1;
     }
 
-    private static boolean matchesSubstitution(AECraftingPattern pattern) {
-        return pattern.canSubstitute() == batchSubstitute && pattern.canSubstituteFluids() == batchSubstituteFluids;
-    }
 
     private static void click(int slot, ClickType type) {
         stateId = task.menu.getStateId(); ticks = 0;

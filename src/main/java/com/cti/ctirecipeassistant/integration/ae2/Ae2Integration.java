@@ -13,7 +13,7 @@ import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.client.operation.*;
 import com.cti.ctirecipeassistant.recipe.RecipeNode;
 import mezz.jei.api.recipe.transfer.IRecipeTransferHandler;
-import net.minecraft.client.gui.screens.Screen;
+import com.cti.ctirecipeassistant.recipe.TreeIngredient;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraftforge.common.MinecraftForge;
 import java.util.*;
@@ -27,8 +27,9 @@ public final class Ae2Integration implements OptionalIntegrations.Ae2 {
         MinecraftForge.EVENT_BUS.register(PatternEncoder.class);
         MinecraftForge.EVENT_BUS.register(PatternDistributor.class);
         MinecraftForge.EVENT_BUS.register(DistributionPreview.class);
+        MinecraftForge.EVENT_BUS.register(Ae2Refill.class);
     }
-    public boolean busy() { return PatternEncoder.busy() || PatternDistributor.busy() || DistributionPreview.active(); }
+    public boolean busy() { return PatternEncoder.busy() || PatternDistributor.busy() || DistributionPreview.active() || Ae2Refill.busy(); }
     public void preview(ClientRecipeOperation<?> operation) { PatternEncoder.preview(operation); }
     public ClientRecipeOperation.Mode mode(AbstractContainerMenu menu) {
         if (menu instanceof PatternAccessTermMenu) return ClientRecipeOperation.Mode.HIDDEN;
@@ -53,8 +54,13 @@ public final class Ae2Integration implements OptionalIntegrations.Ae2 {
     public String unavailable(AbstractContainerMenu menu) {
         var terminal = (CraftingTermMenu) menu;
         if (terminal.getClientRepo() == null || !terminal.isPowered()) return "合成终端尚未同步或网络无电";
-        return Screen.hasControlDown() ? "请松开 Ctrl；一键合成不向 AE2 CPU 下单" : null;
+        return null;
     }
+    public boolean refillAvailable(AbstractContainerMenu menu) { return Ae2Refill.available(menu); }
+    public Map<Object, OptionalIntegrations.Supply> supplies(AbstractContainerMenu menu, List<TreeIngredient> materials) {
+        return Ae2Refill.supplies(menu, materials);
+    }
+    public boolean refill(AbstractContainerMenu menu, List<TreeIngredient> materials) { return Ae2Refill.start(menu, materials); }
     public boolean supportedHandler(IRecipeTransferHandler<?, ?> handler) { return handler instanceof UseCraftingRecipeTransfer<?>; }
     public Object recipe(RecipeNode node) { return AeCraftingSelection.template(node); }
     public void takeResult(int slot) {

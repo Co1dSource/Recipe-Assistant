@@ -1,6 +1,5 @@
 package com.cti.ctirecipeassistant.client.jei;
 
-import com.cti.ctirecipeassistant.integration.PatternConfirmation;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.client.gui.*;
 import com.cti.ctirecipeassistant.client.operation.*;
@@ -25,14 +24,15 @@ import java.util.*;
 /** Local navigation only. A pending selection never reaches an item-operation dispatcher. */
 @Mod.EventBusSubscriber(modid = CtiRecipeAssistant.MOD_ID, value = Dist.CLIENT)
 public final class RecipeInteractions {
-    public record Selection(RecipeNode node, RecipeTreeScreen tree, Screen returnTo, Runnable refresh) {}
+    public record Selection(RecipeNode node, RecipeTreeScreen tree, Screen returnTo, Runnable refresh,
+                            Map<IRecipeLayoutDrawable<?>, Optional<RecipeCandidate>> choices) {}
     public record JeiContext(RecipesGui screen, Screen parent, IngredientLookupState state,
-                             List<ITypedIngredient<?>> focuses, Map<Object, String> targets) {}
+                             List<ITypedIngredient<?>> focuses, Map<Object, String> targets, Selection pending) {}
     public static JeiContext captureJei(RecipesGui gui) {
         var access = (RecipesGuiAccessor) gui;
         return new JeiContext(gui, access.cti$getParentScreen(),
                 ((RecipeGuiLogicAccessor) access.cti$getLogic()).cti$getState(),
-                outputFocus, new IdentityHashMap<>(outputs));
+                outputFocus, new IdentityHashMap<>(outputs), selection);
     }
     public static void restoreJei(JeiContext context) {
         var access = (RecipesGuiAccessor) context.screen();
@@ -40,26 +40,23 @@ public final class RecipeInteractions {
         ((RecipeGuiLogicAccessor) access.cti$getLogic()).cti$restoreState(context.state(), false);
         outputFocus = context.focuses(); outputs.clear(); outputs.putAll(context.targets());
         access.cti$open();
+        selection = context.pending();
     }
     private static Selection selection;
     private static RecipeTreeScreen last;
+    private static String lastSourceRecipe;
     private static Object world;
-    private static PatternConfirmation confirmation;
     private static List<ITypedIngredient<?>> outputFocus = List.of();
     private static final Map<Object, String> outputs = new IdentityHashMap<>();
     private RecipeInteractions() {}
 
-    public static void clear() { selection = null; last = null; confirmation = null; world = null; outputs.clear(); outputFocus = List.of(); }
+    public static void clear() { selection = null; last = null; lastSourceRecipe = null; world = null; outputs.clear(); outputFocus = List.of(); }
     private static void world() {
         var current = Minecraft.getInstance().level;
         if (world != current) { clear(); world = current; }
     }
     public static boolean choosing() { return selection != null; }
     public static Selection selection() { return selection; }
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public static void opening(ScreenEvent.Opening event) {
-        if (event.getNewScreen() instanceof RecipeTreeScreen) confirmation = null;
-    }
     @SubscribeEvent
     public static void closing(ScreenEvent.Closing event) {
         if (event.getScreen() instanceof RecipesGui) selection = null;
@@ -100,23 +97,37 @@ public final class RecipeInteractions {
         return target(layout, mc.mouseHandler.xpos() * window.getGuiScaledWidth() / window.getScreenWidth(),
                 mc.mouseHandler.ypos() * window.getGuiScaledHeight() / window.getScreenHeight());
     }
-    public static Component tooltip(ClientRecipeOperation.Mode mode) {
-        return choosing() ? Component.literal("选择此生产配方") : mode.tooltip();
-    }
     public static ClientRecipeOperation.Mode mode(Screen parent, IRecipeLayoutDrawable<?> layout) {
-        return choosing() ? ClientRecipeOperation.Mode.ONE_KEY_CRAFT : ClientRecipeOperation.Mode.fromParent(parent, layout);
+        if (choosing()) return selectableRecipe(layout).isPresent()
+                ? ClientRecipeOperation.Mode.ONE_KEY_CRAFT : ClientRecipeOperation.Mode.HIDDEN;
+        return ClientRecipeOperation.Mode.fromParent(parent, layout);
     }
 
     public static void choose(RecipeNode node, RecipeTreeScreen tree, Screen returnTo, Runnable refresh) {
-        world(); confirmation = null;
+        world();
         Minecraft.getInstance().setScreen(returnTo);
-        selection = new Selection(node, tree, returnTo, refresh);
+        selection = new Selection(node, tree, returnTo, refresh, new IdentityHashMap<>());
         var factory = TreeJeiPlugin.runtime.getJeiHelpers().getFocusFactory();
         TreeJeiPlugin.runtime.getRecipesGui().show(factory.createFocus(RecipeIngredientRole.OUTPUT, node.target.typed()));
-        if (!(Minecraft.getInstance().screen instanceof RecipesGui)) {
+        if (Minecraft.getInstance().screen instanceof RecipesGui gui) {
+            if (node.selected != null) focusProduction(gui, tree.index().layout(node.selected.id()));
+        } else {
             selection = null;
             Minecraft.getInstance().gui.getChat().addMessage(Component.literal("JEI 中没有可用的生产配方：" + node.target.name()));
         }
+    }
+    private static void focusProduction(RecipesGui gui, IRecipeLayoutDrawable<?> selected) {
+        if (selected == null) return;
+        var logic = ((RecipesGuiAccessor) gui).cti$getLogic();
+        if (!logic.getRecipeCategories().contains(selected.getRecipeCategory())) return;
+        logic.setRecipeCategory(selected.getRecipeCategory());
+        var access = (RecipeGuiLogicAccessor) logic;
+        var state = access.cti$getState();
+        int index = state.getFocusedRecipes().getRecipes().indexOf(selected.getRecipe());
+        if (index < 0) return;
+        int pageSize = Math.max(1, state.getRecipesPerPage());
+        state.setRecipeIndex(index / pageSize * pageSize);
+        access.cti$restoreState(state, false);
     }
     public static boolean accept(ClientRecipeOperation<?> operation) {
         if (selection == null) return false;
@@ -125,15 +136,27 @@ public final class RecipeInteractions {
         return true;
     }
     public static void accept(IRecipeLayoutDrawable<?> layout) {
-        if (selection == null) return;
+        if (selection == null || CraftExecutor.busy() || OptionalIntegrations.busy()) return;
         var pending = selection;
-        boolean matching = outputs(layout).stream().anyMatch(t -> t.key().equals(pending.node.target.key()));
-        if (!matching || CraftExecutor.busy() || OptionalIntegrations.busy()) return;
-        var candidate = pending.tree.index().readLayout(layout);
-        pending.node.select(candidate);
+        var candidate = selectableRecipe(layout);
+        if (candidate.isEmpty()) return;
+        pending.node.select(candidate.get());
         selection = null;
         pending.refresh.run();
         Minecraft.getInstance().setScreen(pending.returnTo);
+    }
+    private static Optional<RecipeCandidate> selectableRecipe(IRecipeLayoutDrawable<?> layout) {
+        if (!ClientRecipeOperation.isThreeByThreeCrafting(layout)) return Optional.empty();
+        var pending = selection;
+        return pending.choices.computeIfAbsent(layout, shown -> {
+            if (outputs(shown).stream().noneMatch(t -> t.key().equals(pending.node.target.key()))) return Optional.empty();
+            var candidate = pending.tree.index().readLayout(shown, pending.node.target);
+            var preview = pending.node.previewProduction(candidate);
+            boolean cycle = preview.children.stream().anyMatch(child -> child.cycle && !child.productionCut())
+                    || PatternPlanner.plan(preview).issues().stream()
+                    .anyMatch(issue -> issue.type() == PatternPlanner.ProblemType.CYCLE);
+            return cycle ? Optional.empty() : Optional.of(candidate);
+        });
     }
     private static <R> Optional<IRecipeLayoutDrawable<R>> layout(ClientRecipeOperation<R> operation) {
         return TreeJeiPlugin.runtime.getRecipeManager().createRecipeLayoutDrawable(operation.category(), operation.recipe(),
@@ -143,20 +166,41 @@ public final class RecipeInteractions {
         if (selection == null) return false;
         var parent = selection.returnTo; selection = null; Minecraft.getInstance().setScreen(parent); return true;
     }
-    public static <R> boolean openLayout(IRecipeLayoutDrawable<R> layout, Screen previous, double x, double y) {
-        world();
-        var target = target(layout, x, y);
-        if (target.isEmpty()) {
-            Minecraft.getInstance().gui.getChat().addMessage(Component.literal("请将鼠标移到需要的目标产物后按 G")); return true;
-        }
-        last = new RecipeTreeScreen(target.get(), TreeJeiPlugin.runtime, previous);
-        var candidate = last.index().readLayout(layout);
-        last.finalRoot().useRecipe(candidate); last.finalRoot().expanded = true; last.refresh();
-        confirmation = null; Minecraft.getInstance().setScreen(last); return true;
+    private static void openLayout(IRecipeLayoutDrawable<?> layout, Screen previous, TreeIngredient target) {
+        outputs.put(layout.getRecipe(), target.key());
+        last = new RecipeTreeScreen(target, TreeJeiPlugin.runtime, previous);
+        var candidate = last.index().readLayout(layout, target);
+        lastSourceRecipe = candidate.id();
+        if (!last.finalRoot().productionCut()) last.finalRoot().useRecipe(candidate);
+        last.finalRoot().expanded = true; last.refresh();
+        Minecraft.getInstance().setScreen(last);
     }
     public static void openItem(TreeIngredient target, Screen previous) {
         world(); last = new RecipeTreeScreen(target, TreeJeiPlugin.runtime, previous);
-        confirmation = null; Minecraft.getInstance().setScreen(last);
+        lastSourceRecipe = null;
+        Minecraft.getInstance().setScreen(last);
+    }
+
+    public static RecipeTreeScreen actionTree(ClientRecipeOperation<?> operation, IRecipeLayoutDrawable<?> source) {
+        world();
+        if (last != null && last.index().craftingOnly() && last.finalRoot().target.key().equals(operation.target().key())
+                && (Objects.equals(lastSourceRecipe, operation.candidate().id()) || lastSourceRecipe == null
+                || last.finalRoot().selected != null && last.finalRoot().selected.id().equals(operation.candidate().id()))
+                && (last.finalRoot().selected != null || last.finalRoot().productionCut())) return last;
+        var tree = new RecipeTreeScreen(operation.target(), TreeJeiPlugin.runtime, null, true);
+        var candidate = tree.index().readLayout(source, operation.target());
+        if (!tree.finalRoot().productionCut() && (tree.preferences().get("recipe|" + operation.target().key()).isEmpty()
+                || tree.finalRoot().selected == null))
+            tree.finalRoot().useRecipe(candidate);
+        tree.refresh();
+        return tree;
+    }
+
+    public static void openActionTree(ClientRecipeOperation<?> operation, Screen previous, RecipeTreeScreen tree) {
+        last = tree;
+        lastSourceRecipe = operation.candidate().id();
+        last.returnTo(previous);
+        Minecraft.getInstance().setScreen(last);
     }
     public static boolean restore(Screen previous) {
         world();
@@ -165,12 +209,15 @@ public final class RecipeInteractions {
     }
     public static boolean key(Screen screen, double x, double y) {
         world();
-        if (selection != null) return true; // G never confirms or replaces a pending node.
-        if (screen instanceof PatternConfirmation preview) { preview.locateProblem(); return true; }
-        if (screen instanceof RecipeTreeScreen) return true;
-        if (screen instanceof RecipesGui gui) for (var layout : ((RecipesGuiAccessor) gui).cti$getRecipeLayouts())
-            if (layout.isMouseOver(x, y) || RecipeActionButtons.isMouseOver(RecipeActionButtons.buttonArea(layout), x, y))
-                return openLayout(layout, screen, x, y);
+        if (screen instanceof RecipesGui gui) for (var layout : ((RecipesGuiAccessor) gui).cti$getRecipeLayouts()) {
+            var slot = layout.getRecipeSlotUnderMouse(x, y);
+            var hovered = slot.flatMap(s -> s.getDisplayedIngredient());
+            if (hovered.isEmpty()) continue;
+            var target = ingredient(hovered.get());
+            if (slot.get().getRole() == RecipeIngredientRole.OUTPUT) openLayout(layout, screen, target);
+            else openItem(target, screen);
+            return true;
+        }
         return false;
     }
     public static RecipeTreeScreen tree(ClientRecipeOperation<?> operation) {
@@ -180,8 +227,9 @@ public final class RecipeInteractions {
                 || !last.finalRoot().target.key().equals(operation.target().key())) {
             // Encoding previews are transient. Only explicitly opened trees enter G history.
             var tree = new RecipeTreeScreen(operation.target(), TreeJeiPlugin.runtime, operation.parentScreen());
-            layout(operation).ifPresent(l -> tree.index().readLayout(l));
-            tree.finalRoot().useRecipe(operation.candidate()); tree.finalRoot().expanded = true; tree.refresh();
+            layout(operation).ifPresent(l -> tree.index().readLayout(l, operation.target()));
+            if (!tree.finalRoot().productionCut()) tree.finalRoot().useRecipe(operation.candidate());
+            tree.finalRoot().expanded = true; tree.refresh();
             return tree;
         }
         return last;
@@ -201,15 +249,5 @@ public final class RecipeInteractions {
             var sourceChild = original.children.get(i); var targetChild = target.children.get(i);
             if (sourceChild.target.key().equals(targetChild.target.key())) copyCuts(sourceChild, targetChild);
         }
-    }
-    public static void arm(PatternConfirmation preview) {
-        confirmation = preview;
-        restoreJei(preview.jeiContext());
-        outputs.put(preview.sourceRecipe(), preview.target().key());
-    }
-    public static boolean confirmEncoding(ClientRecipeOperation<?> operation) {
-        if (confirmation == null || !confirmation.matches(operation)) return false;
-        var preview = confirmation; confirmation = null;
-        preview.startFromJei(); return true;
     }
 }

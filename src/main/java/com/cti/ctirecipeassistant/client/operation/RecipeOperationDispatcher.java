@@ -30,10 +30,6 @@ public final class RecipeOperationDispatcher {
         if (OptionalIntegrations.busy()) return new Availability(ButtonState.DISABLED_REASON, Component.literal("批量编码正在进行"));
         if (RecipeInteractions.target(layout).isEmpty()) return new Availability(ButtonState.DISABLED_REASON,
                 Component.literal("请将鼠标移到需要的目标产物后按 G"));
-        if (mode == ClientRecipeOperation.Mode.ONE_KEY_CRAFT) {
-            var availability = CraftExecutor.check(layout, parent);
-            if (!availability.enabled()) return availability;
-        }
         boolean hasOutput = layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.OUTPUT).stream()
                 .anyMatch(slot -> slot.getAllIngredients().findAny().isPresent());
         return hasOutput ? new Availability(ButtonState.ENABLED, null)
@@ -46,12 +42,8 @@ public final class RecipeOperationDispatcher {
     public static void dispatch(ClientRecipeOperation<?> operation) {
         if (RecipeInteractions.accept(operation)) return;
         if (operation.mode() == ClientRecipeOperation.Mode.HIDDEN || OptionalIntegrations.busy()) return;
-        if (operation.mode() == ClientRecipeOperation.Mode.ONE_KEY_CRAFT) {
-            CraftExecutor.start(operation);
-            return;
-        }
+        if (operation.mode() != ClientRecipeOperation.Mode.BATCH_PATTERN_ENCODING) return;
         pending = operation;
-        if (RecipeInteractions.confirmEncoding(operation)) return;
         OptionalIntegrations.preview(operation);
     }
 }
