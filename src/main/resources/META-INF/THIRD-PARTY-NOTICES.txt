@@ -1,0 +1,11 @@
+The recipe tree layout and interaction design are adapted from Quick Craft.
+Upstream: https://github.com/Sxilverrr/Quick-Craft
+Copyright (c) 2026 Sxilverrr, MIT License (see QUICK-CRAFT-LICENSE.txt).
+Reference classes: TreeLayout, NodeView, RecipePreferences, QuickCraftClientEvents,
+QuickCraftScreen. No crafting, inventory scanning or server code is included.
+
+Recipe Assistant's own code and resources are licensed under the MIT License
+in META-INF/LICENSE. This grant does not relicense third-party software.
+JEI, AE2, ExtendedAE, Forge, FTB Library, Tinkers' Construct and Mantle retain
+their own licenses and are distributed separately. Their mod classes,
+resources and JARs are not bundled in this release.
