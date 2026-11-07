@@ -11,5 +11,3 @@
 - Minecraft 1.19.2 Forge
 - 前置 JEI
 - 支持 AE2、ExtendedAE
-
-许可证：[MIT License](LICENSE)。
