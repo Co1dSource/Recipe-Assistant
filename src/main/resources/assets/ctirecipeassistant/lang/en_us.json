@@ -1,0 +1,6 @@
+{
+  "key.categories.ctirecipeassistant": "Recipe Assistant",
+  "key.ctirecipeassistant.open_recipe_tree": "Open recipe tree",
+  "message.ctirecipeassistant.jei_unavailable": "JEI is not ready",
+  "message.ctirecipeassistant.invalid_target": "JEI cannot identify this item"
+}
