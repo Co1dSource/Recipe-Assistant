@@ -148,7 +148,7 @@ public final class RecipeTreeScreen extends Screen {
     }
     private void recipes(RecipeNode node) {
         if (hasProductionChoice(node))
-            RecipeInteractions.choose(node, this, this, this::refresh);
+            RecipeInteractions.choose(node, index, this, this::refresh);
     }
     private boolean canRemoveProduction(RecipeNode node) {
         return node.selected != null && (node == targetRoot || !node.children.isEmpty() || node.cycle);

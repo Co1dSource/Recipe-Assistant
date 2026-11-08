@@ -8,13 +8,9 @@ import java.util.*;
 /** Demand for the selected route, before deducting any real inventory. */
 public record MaterialRequirements(List<TreeIngredient> materials, List<TreeIngredient> catalysts, String problem) {
     public static MaterialRequirements calculate(RecipeNode root, long quantity) {
-        return calculate(root, 63, quantity);
-    }
-
-    public static MaterialRequirements calculate(RecipeNode root, int depth, long quantity) {
-        var ledger = new Ledger(depth);
+        var ledger = new Ledger();
         try {
-            ledger.require(root, quantity, 0);
+            ledger.require(root, quantity);
             return new MaterialRequirements(List.copyOf(ledger.materials.values()),
                     List.copyOf(ledger.catalysts.values()), null);
         } catch (ArithmeticException e) {
@@ -42,23 +38,20 @@ public record MaterialRequirements(List<TreeIngredient> materials, List<TreeIngr
     private static final class RouteLimit extends RuntimeException {}
 
     private static final class Ledger {
-        private final int depth;
         private final Map<Object, TreeIngredient> materials = new LinkedHashMap<>();
         private final Map<Object, TreeIngredient> catalysts = new LinkedHashMap<>();
         private final Map<Object, Long> surplus = new HashMap<>();
         private int visited;
 
-        private Ledger(int depth) { this.depth = depth; }
-
-        private void require(RecipeNode node, long amount, int level) {
+        private void require(RecipeNode node, long amount) {
             if (amount <= 0) return;
             if (++visited > 4096) throw new RouteLimit();
-            if (level <= depth) node.load();
+            node.load();
             var target = node.target;
             var key = identity(target);
             var recipe = node.selected;
             long output = recipe == null ? 0 : recipe.outputAmount(target.key());
-            if (level > depth || node.externalSupply || node.cycle || output <= 0 || output == Long.MAX_VALUE) {
+            if (node.depth >= 64 || node.externalSupply || node.cycle || output <= 0 || output == Long.MAX_VALUE) {
                 materials.merge(key, counted(target, amount), (a, b) -> counted(a, Math.addExact(a.amount(), b.amount())));
                 return;
             }
@@ -75,7 +68,7 @@ public record MaterialRequirements(List<TreeIngredient> materials, List<TreeIngr
                 catalysts.merge(identity(catalyst), catalyst, (a, b) -> a.amount() >= b.amount() ? a : b);
             }
             for (var child : node.children)
-                require(child, Math.multiplyExact(child.requiredAmount(), runs), level + 1);
+                require(child, Math.multiplyExact(child.requiredAmount(), runs));
             long remainder = Math.multiplyExact(runs, output) - amount;
             surplus.merge(key, remainder, Math::addExact);
         }

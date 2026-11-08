@@ -10,6 +10,7 @@ import appeng.crafting.pattern.*;
 import appeng.helpers.InventoryAction;
 import appeng.integration.modules.jei.GenericEntryStackHelper;
 import appeng.integration.modules.jei.transfer.EncodePatternTransferHandler;
+import appeng.menu.AutoCraftingMenu;
 import appeng.menu.SlotSemantics;
 import appeng.menu.me.items.PatternEncodingTermMenu;
 import appeng.parts.encoding.EncodingMode;
@@ -70,7 +71,14 @@ public final class PatternEncoder {
             }
         }
         public String amountKey(int input) { return node.amountKey(input); }
-        String patternKey() { return node.selected.id() + "|" + node.target.key(); }
+        String patternKey() { return PatternEncoder.patternKey(node); }
+        RecipeNode inputNode(AEKey key) {
+            for (var child : node.children) {
+                var stack = GenericEntryStackHelper.ingredientToStack(child.target.typed());
+                if (stack != null && stack.what().equals(key)) return child;
+            }
+            return null;
+        }
         public PatternEncodingSlots slots() { return new PatternEncodingSlots(layout.getRecipeSlotsView(), node, amounts); }
         public TreeIngredient output() { return node.selected.output(node.target.key()); }
         public List<GenericStack> inputs() {
@@ -104,14 +112,15 @@ public final class PatternEncoder {
     }
 
     public static Preview prepare(ClientRecipeOperation<?> operation, RecipeNode root, JeiRecipeIndex index,
-                                   RecipePreferences preferences) {
+                                   RecipePreferences preferences, Set<String> removed) {
         var screen = (AbstractContainerScreen<?>) operation.parentScreen();
         var menu = (PatternEncodingTermMenu) screen.getMenu();
-        var plan = PatternPlanner.plan(root);
+        var plan = PatternPlanner.planEncoding(root);
         var problems = new ArrayList<>(plan.issues());
         var entries = new ArrayList<Entry>();
         var substitutions = new Substitutions(menu.isSubstitute(), menu.isSubstituteFluids());
         for (var node : plan.steps()) {
+            if (removed.contains(patternKey(node))) continue;
             var entry = new Entry(node, index.layout(node.selected.id()), preferences);
             entry.substitutions = substitutions;
             entry.problem = validate(entry, menu);
@@ -122,8 +131,17 @@ public final class PatternEncoder {
         return new Preview(menu, screen, root.target, List.copyOf(entries), List.copyOf(problems), preferences, root, index);
     }
 
+    static String patternKey(RecipeNode node) {
+        return node.selected.id() + "|" + node.target.key();
+    }
+
+    static boolean canChooseRecipe(RecipeNode trial, IRecipeLayoutDrawable<?> layout, PatternEncodingTermMenu menu) {
+        return trial.depth < 64 && !trial.cycle && layout != null && handler(layout, menu) != null
+                && (!(layout.getRecipe() instanceof CraftingRecipe recipe) || recipe.canCraftInDimensions(3, 3));
+    }
+
     private static String validate(Entry entry, PatternEncodingTermMenu menu) {
-        if (entry.layout == null || handler(entry, menu) == null) return "没有 AE2 编码处理器，不支持此配方";
+        if (entry.layout == null || handler(entry.layout, menu) == null) return "没有 AE2 编码处理器，不支持此配方";
         var node = entry.node;
         for (int i = 0; i < node.selected.inputs().size(); i++) if (!node.selected.inputs().get(i).isEmpty()) {
             var selected = node.selectedInput(i);
@@ -138,7 +156,7 @@ public final class PatternEncoder {
         if (entry.crafting) {
             if (node.selected.inputs().size() != 9 || !((CraftingRecipe) entry.layout.getRecipe()).canCraftInDimensions(3, 3))
                 return "工作台布局不是普通 3×3 配方";
-            var grid = new CraftingContainer(menu, 3, 3);
+            var grid = new CraftingContainer(new AutoCraftingMenu(), 3, 3);
             for (int i = 0; i < 9; i++) if (!node.selected.inputs().get(i).isEmpty())
                 grid.setItem(i, ((ItemStack) node.selectedInput(i).typed().getIngredient()).copy());
             var recipe = (CraftingRecipe) entry.layout.getRecipe();
@@ -152,8 +170,8 @@ public final class PatternEncoder {
     }
 
     @SuppressWarnings("unchecked") // The actual AE2 handler accepts Object, including machine recipe displays.
-    private static IRecipeTransferHandler<PatternEncodingTermMenu, Object> handler(Entry entry, PatternEncodingTermMenu menu) {
-        var found = TreeJeiPlugin.runtime.getRecipeTransferManager().getRecipeTransferHandler(menu, entry.layout.getRecipeCategory());
+    private static IRecipeTransferHandler<PatternEncodingTermMenu, Object> handler(IRecipeLayoutDrawable<?> layout, PatternEncodingTermMenu menu) {
+        var found = TreeJeiPlugin.runtime.getRecipeTransferManager().getRecipeTransferHandler(menu, layout.getRecipeCategory());
         return found.isPresent() && found.get() instanceof EncodePatternTransferHandler<?>
                 ? (IRecipeTransferHandler<PatternEncodingTermMenu, Object>) (IRecipeTransferHandler<?, ?>) found.get() : null;
     }
@@ -259,7 +277,7 @@ public final class PatternEncoder {
         }
         // A pre-existing exact layout needs no transfer and no artificial sync delay.
         if (ready(entry)) { state = State.TRANSFER; ticks = 0; return; }
-        var transfer = handler(entry, task.menu);
+        var transfer = handler(entry.layout, task.menu);
         if (transfer == null) { finish("AE2 JEI 编码处理器已失效"); return; }
         Object recipe = entry.crafting ? entry.layout.getRecipe() : entry.slots();
         // Non-crafting displays intentionally use AE2's processing path, including stonecutting/smithing categories.

@@ -1,6 +1,7 @@
 package com.cti.ctirecipeassistant.client.jei;
 
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
+import com.cti.ctirecipeassistant.integration.PatternConfirmation;
 import com.cti.ctirecipeassistant.client.gui.*;
 import com.cti.ctirecipeassistant.client.operation.*;
 import com.cti.ctirecipeassistant.mixin.RecipesGuiAccessor;
@@ -24,7 +25,7 @@ import java.util.*;
 /** Local navigation only. A pending selection never reaches an item-operation dispatcher. */
 @Mod.EventBusSubscriber(modid = CtiRecipeAssistant.MOD_ID, value = Dist.CLIENT)
 public final class RecipeInteractions {
-    public record Selection(RecipeNode node, RecipeTreeScreen tree, Screen returnTo, Runnable refresh,
+    public record Selection(RecipeNode node, JeiRecipeIndex index, Screen returnTo, Runnable refresh,
                             Map<IRecipeLayoutDrawable<?>, Optional<RecipeCandidate>> choices) {}
     public record JeiContext(RecipesGui screen, Screen parent, IngredientLookupState state,
                              List<ITypedIngredient<?>> focuses, Map<Object, String> targets, Selection pending) {}
@@ -56,6 +57,7 @@ public final class RecipeInteractions {
         if (world != current) { clear(); world = current; }
     }
     public static boolean choosing() { return selection != null; }
+    public static boolean choosingEncoding() { return selection != null && selection.returnTo instanceof PatternConfirmation; }
     public static Selection selection() { return selection; }
     @SubscribeEvent
     public static void closing(ScreenEvent.Closing event) {
@@ -103,14 +105,14 @@ public final class RecipeInteractions {
         return ClientRecipeOperation.Mode.fromParent(parent, layout);
     }
 
-    public static void choose(RecipeNode node, RecipeTreeScreen tree, Screen returnTo, Runnable refresh) {
+    public static void choose(RecipeNode node, JeiRecipeIndex index, Screen returnTo, Runnable refresh) {
         world();
         Minecraft.getInstance().setScreen(returnTo);
-        selection = new Selection(node, tree, returnTo, refresh, new IdentityHashMap<>());
+        selection = new Selection(node, index, returnTo, refresh, new IdentityHashMap<>());
         var factory = TreeJeiPlugin.runtime.getJeiHelpers().getFocusFactory();
         TreeJeiPlugin.runtime.getRecipesGui().show(factory.createFocus(RecipeIngredientRole.OUTPUT, node.target.typed()));
         if (Minecraft.getInstance().screen instanceof RecipesGui gui) {
-            if (node.selected != null) focusProduction(gui, tree.index().layout(node.selected.id()));
+            if (node.selected != null) focusProduction(gui, index.layout(node.selected.id()));
         } else {
             selection = null;
             Minecraft.getInstance().gui.getChat().addMessage(Component.literal("JEI 中没有可用的生产配方：" + node.target.name()));
@@ -140,17 +142,21 @@ public final class RecipeInteractions {
         var pending = selection;
         var candidate = selectableRecipe(layout);
         if (candidate.isEmpty()) return;
-        pending.node.select(candidate.get());
+        if (pending.returnTo instanceof PatternConfirmation encoding) encoding.chooseEncodingRecipe(pending.node, candidate.get());
+        else pending.node.select(candidate.get());
         selection = null;
         pending.refresh.run();
         Minecraft.getInstance().setScreen(pending.returnTo);
     }
     private static Optional<RecipeCandidate> selectableRecipe(IRecipeLayoutDrawable<?> layout) {
-        if (!ClientRecipeOperation.isThreeByThreeCrafting(layout)) return Optional.empty();
         var pending = selection;
+        if (!(pending.returnTo instanceof PatternConfirmation) && !ClientRecipeOperation.isThreeByThreeCrafting(layout))
+            return Optional.empty();
         return pending.choices.computeIfAbsent(layout, shown -> {
             if (outputs(shown).stream().noneMatch(t -> t.key().equals(pending.node.target.key()))) return Optional.empty();
-            var candidate = pending.tree.index().readLayout(shown, pending.node.target);
+            var candidate = pending.index.readLayout(shown, pending.node.target);
+            if (pending.returnTo instanceof PatternConfirmation encoding)
+                return encoding.canChooseEncodingRecipe(pending.node, candidate) ? Optional.of(candidate) : Optional.empty();
             var preview = pending.node.previewProduction(candidate);
             boolean cycle = preview.children.stream().anyMatch(child -> child.cycle && !child.productionCut())
                     || PatternPlanner.plan(preview).issues().stream()
@@ -158,7 +164,7 @@ public final class RecipeInteractions {
             return cycle ? Optional.empty() : Optional.of(candidate);
         });
     }
-    private static <R> Optional<IRecipeLayoutDrawable<R>> layout(ClientRecipeOperation<R> operation) {
+    public static <R> Optional<IRecipeLayoutDrawable<R>> layout(ClientRecipeOperation<R> operation) {
         return TreeJeiPlugin.runtime.getRecipeManager().createRecipeLayoutDrawable(operation.category(), operation.recipe(),
                 TreeJeiPlugin.runtime.getJeiHelpers().getFocusFactory().getEmptyFocusGroup());
     }
@@ -219,20 +225,6 @@ public final class RecipeInteractions {
             return true;
         }
         return false;
-    }
-    public static RecipeTreeScreen tree(ClientRecipeOperation<?> operation) {
-        world();
-        if (last == null || last.finalRoot().selected == null
-                || !last.finalRoot().selected.id().equals(operation.candidate().id())
-                || !last.finalRoot().target.key().equals(operation.target().key())) {
-            // Encoding previews are transient. Only explicitly opened trees enter G history.
-            var tree = new RecipeTreeScreen(operation.target(), TreeJeiPlugin.runtime, operation.parentScreen());
-            layout(operation).ifPresent(l -> tree.index().readLayout(l, operation.target()));
-            if (!tree.finalRoot().productionCut()) tree.finalRoot().useRecipe(operation.candidate());
-            tree.finalRoot().expanded = true; tree.refresh();
-            return tree;
-        }
-        return last;
     }
     /** Carry local cuts into this tree's crafting view; never change another independent tree. */
     public static void applyCurrentCuts(RecipeNode root) {

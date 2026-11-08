@@ -214,7 +214,7 @@ public final class RecipeActionButtons {
     }
 
     static List<Component> operationTooltip(ClientRecipeOperation.Mode mode, boolean choosing, boolean canRefill) {
-        if (choosing) return List.of(Component.literal("选择此生产配方"));
+        if (choosing) return List.of(Component.literal(RecipeInteractions.choosingEncoding() ? "用此配方编码" : "选择此生产配方"));
         if (mode == ClientRecipeOperation.Mode.BATCH_PATTERN_ENCODING) return List.of(mode.tooltip());
         var lines = new ArrayList<Component>();
         lines.add(mode.tooltip());
