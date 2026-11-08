@@ -77,7 +77,7 @@ public final class RecipeInteractions {
                 .forEach(target -> unique.putIfAbsent(target.key(), target));
         return List.copyOf(unique.values());
     }
-    private static TreeIngredient ingredient(ITypedIngredient<?> typed) {
+    static TreeIngredient ingredient(ITypedIngredient<?> typed) {
         return TreeIngredient.of(typed, TreeJeiPlugin.runtime.getIngredientManager());
     }
     public static Optional<TreeIngredient> target(IRecipeLayoutDrawable<?> layout, double x, double y) {
@@ -177,7 +177,7 @@ public final class RecipeInteractions {
         last = new RecipeTreeScreen(target, TreeJeiPlugin.runtime, previous);
         var candidate = last.index().readLayout(layout, target);
         lastSourceRecipe = candidate.id();
-        if (!last.finalRoot().productionCut()) last.finalRoot().useRecipe(candidate);
+        if (!last.finalRoot().productionCut()) last.finalRoot().select(candidate);
         last.finalRoot().expanded = true; last.refresh();
         Minecraft.getInstance().setScreen(last);
     }
@@ -189,14 +189,14 @@ public final class RecipeInteractions {
 
     public static RecipeTreeScreen actionTree(ClientRecipeOperation<?> operation, IRecipeLayoutDrawable<?> source) {
         world();
-        if (last != null && last.index().craftingOnly() && last.finalRoot().target.key().equals(operation.target().key())
+        if (last != null && last.index().craftingOnly()
+                && MaterialRequirements.identity(last.finalRoot().target).equals(MaterialRequirements.identity(operation.target()))
                 && (Objects.equals(lastSourceRecipe, operation.candidate().id()) || lastSourceRecipe == null
                 || last.finalRoot().selected != null && last.finalRoot().selected.id().equals(operation.candidate().id()))
                 && (last.finalRoot().selected != null || last.finalRoot().productionCut())) return last;
         var tree = new RecipeTreeScreen(operation.target(), TreeJeiPlugin.runtime, null, true);
         var candidate = tree.index().readLayout(source, operation.target());
-        if (!tree.finalRoot().productionCut() && (tree.preferences().get("recipe|" + operation.target().key()).isEmpty()
-                || tree.finalRoot().selected == null))
+        if (!tree.finalRoot().productionCut() && !tree.finalRoot().hasConfiguredProduction())
             tree.finalRoot().useRecipe(candidate);
         tree.refresh();
         return tree;

@@ -1,5 +1,8 @@
 package com.cti.ctirecipeassistant.recipe;
 
+import com.cti.ctirecipeassistant.client.operation.ItemIdentity;
+import net.minecraft.core.Registry;
+
 import java.util.*;
 
 public final class RecipeNode {
@@ -15,6 +18,7 @@ public final class RecipeNode {
     public final int depth;
     private final JeiRecipeIndex index;
     private final RecipePreferences preferences;
+    private final String preferenceIdentity;
     private int inputSlot = -1;
 
     public RecipeNode(TreeIngredient target, RecipeNode parent, JeiRecipeIndex index, RecipePreferences preferences) {
@@ -22,6 +26,10 @@ public final class RecipeNode {
         this.parent = parent;
         this.index = index;
         this.preferences = preferences;
+        var identity = MaterialRequirements.identity(target);
+        preferenceIdentity = identity instanceof ItemIdentity item
+                ? Registry.ITEM.getKey(item.item()) + "|" + item.tag() + "|" + item.capabilities()
+                : target.key();
         depth = parent == null ? 0 : parent.depth + 1;
         boolean repeats = false;
         for (RecipeNode p = parent; p != null; p = p.parent) {
@@ -35,13 +43,13 @@ public final class RecipeNode {
         candidates = index.find(target);
         // Each machine retains its own latest recipe; switching machines does not erase it.
         candidates = candidates.stream().sorted(Comparator.comparing(RecipeCandidate::category)
-                .thenComparing(c -> !c.id().equals(preferences.get("machine|" + target.key() + "|" + c.category())))
+                .thenComparing(c -> !c.id().equals(machinePreference(c.category())))
                 .thenComparingLong(c -> c.outputAmount(target.key()))).toList();
         if (productionCut()) { externalSupply = true; cycle = false; return; }
-        String saved = preferences.get("recipe|" + target.key());
+        String saved = recipePreference();
         selected = candidates.stream().filter(c -> c.id().equals(saved)).findFirst().orElse(null);
         if (selected == null && index.craftingOnly()) {
-            String crafting = preferences.get("machine|" + target.key() + "|minecraft:crafting");
+            String crafting = machinePreference("minecraft:crafting");
             selected = candidates.stream().filter(c -> c.id().equals(crafting)).findFirst().orElse(null);
         }
         boolean automatic = selected == null && candidates.size() == 1;
@@ -63,26 +71,60 @@ public final class RecipeNode {
         RecipePreferences.treeChanged();
     }
     public void rememberCut() {
-        preferences.put(cutKey(), "cut");
-        removeProduction();
+        preferences.put(materialCutKey(), "cut");
+        treeRoot().applyProduction(MaterialRequirements.identity(target), null);
     }
-    public boolean productionCut() { return preferences.get(cutKey()).equals("cut"); }
+    public boolean productionCut() {
+        String saved = preferences.get(materialCutKey());
+        return saved.isEmpty() ? preferences.get(cutKey()).equals("cut") : saved.equals("cut");
+    }
     public boolean hasConfiguredProduction() {
-        return selected != null && (selected.id().equals(preferences.get("recipe|" + target.key()))
-                || selected.id().equals(preferences.get("machine|" + target.key() + "|" + selected.category())));
+        return selected != null && (selected.id().equals(recipePreference())
+                || selected.id().equals(machinePreference(selected.category())));
+    }
+    private String recipePreference() {
+        String saved = preferences.get("recipe-item|" + preferenceIdentity);
+        return saved.isEmpty() ? preferences.get("recipe|" + target.key()) : saved;
+    }
+    private String machinePreference(String category) {
+        String saved = preferences.get("machine-item|" + category + "|" + preferenceIdentity);
+        return saved.isEmpty() ? preferences.get("machine|" + target.key() + "|" + category) : saved;
+    }
+    private RecipeNode treeRoot() {
+        RecipeNode tree = this;
+        while (tree.parent != null) tree = tree.parent;
+        return tree;
+    }
+    private String materialCutKey() {
+        String rootIdentity = treeRoot().preferenceIdentity;
+        return "external-item|" + rootIdentity.length() + "|" + rootIdentity + "|" + preferenceIdentity;
     }
     private String cutKey() {
         if (parent == null) return "external|" + target.key();
         return parent.cutKey() + "|" + parent.selected.id() + "|" + inputSlot + "|" + target.key();
     }
     public void select(RecipeCandidate candidate) {
-        boolean same = selected != null && selected.id().equals(candidate.id());
-        if (productionCut()) preferences.put(cutKey(), "");
-        preferences.put("recipe|" + target.key(), candidate.id());
-        preferences.put("machine|" + target.key() + "|" + candidate.category(), candidate.id());
-        if (same) selected = candidate;
-        else useRecipe(candidate);
+        preferences.putAll(Map.of(materialCutKey(), "selected",
+                "recipe-item|" + preferenceIdentity, candidate.id(),
+                "machine-item|" + candidate.category() + "|" + preferenceIdentity, candidate.id()));
+        treeRoot().applyProduction(MaterialRequirements.identity(target), candidate);
         expanded = true;
+    }
+    private void applyProduction(Object identity, RecipeCandidate candidate) {
+        if (MaterialRequirements.identity(target).equals(identity)) {
+            if (candidate == null) {
+                if (candidates.isEmpty() && selected != null) candidates = List.of(selected);
+                removeProduction();
+                return;
+            }
+            if (depth >= 64) return;
+            if (selected == null || !selected.id().equals(candidate.id())) {
+                useRecipe(candidate);
+                return;
+            }
+            selected = candidate;
+        }
+        for (var child : children) child.applyProduction(identity, candidate);
     }
     /** Bind a JEI button's exact root without changing the saved tree preference. */
     public void useRecipe(RecipeCandidate candidate) {
@@ -135,7 +177,8 @@ public final class RecipeNode {
     public TreeIngredient selectedInput(int slot) {
         var alternatives = selected.inputs().get(slot);
         if (alternatives.size() == 1) return alternatives.get(0);
-        String scoped = preferences.get(scopedVariantKey(slot));
+        String scoped = preferences.get(exactVariantKey(slot));
+        if (scoped.isEmpty()) scoped = preferences.get(scopedVariantKey(slot));
         String saved = scoped.isEmpty() ? preferences.get(variantKey(slot)) : scoped;
         if (saved.isEmpty()) return alternatives.get(0);
         return alternatives.stream().filter(i -> i.key().equals(saved) || i.variantId().equals(saved))
@@ -147,24 +190,33 @@ public final class RecipeNode {
     }
     public String variantKey(int slot) { return "input|" + target.key() + "|" + selected.category() + "|" + selected.id() + "|" + slot; }
     private String scopedVariantKey(int slot) {
-        RecipeNode tree = this;
-        while (tree.parent != null) tree = tree.parent;
-        return variantKey(slot) + "|tree|" + tree.target.key() + "|depth|" + depth;
+        return variantKey(slot) + "|tree|" + treeRoot().target.key() + "|depth|" + depth;
     }
+    private String exactVariantKey(int slot) {
+        String rootIdentity = treeRoot().preferenceIdentity;
+        return "input-item|" + selected.id() + "|" + slot + "|" + depth + "|"
+                + rootIdentity.length() + "|" + rootIdentity + "|" + preferenceIdentity;
+    }
+    /** Synchronize compatible input slots across the whole tree. */
     public void chooseInputsAtDepth(RecipeNode source, TreeIngredient ingredient) {
         if (source.target.variantId().equals(ingredient.variantId())) return;
-        replaceInputsAtDepth(source, ingredient, MaterialRequirements.identity(source.target), MaterialRequirements.identity(ingredient));
+        Map<String, String> choices = new HashMap<>();
+        replaceInputs(source, ingredient, MaterialRequirements.identity(source.target),
+                MaterialRequirements.identity(ingredient), choices);
+        preferences.putAll(choices);
     }
-    private void replaceInputsAtDepth(RecipeNode source, TreeIngredient ingredient, Object original, Object replacement) {
-        if (depth < source.parent.depth) {
-            for (var child : children) child.replaceInputsAtDepth(source, ingredient, original, replacement);
-            return;
-        }
-        for (var child : children) {
+    private void replaceInputs(RecipeNode source, TreeIngredient ingredient, Object original, Object replacement,
+                               Map<String, String> choices) {
+        for (int i = 0; i < children.size(); i++) {
+            var child = children.get(i);
+            child.replaceInputs(source, ingredient, original, replacement, choices);
             if (!MaterialRequirements.identity(child.target).equals(original)) continue;
             var variant = child == source ? ingredient : child.inputVariants().stream()
                     .filter(option -> MaterialRequirements.identity(option).equals(replacement)).findFirst().orElse(null);
-            if (variant != null) chooseInput(child.inputSlot, variant);
+            if (variant != null) {
+                choices.put(exactVariantKey(child.inputSlot), variant.variantId());
+                replaceInput(i, variant);
+            }
         }
     }
     public RecipeNode chooseInput(int slot, TreeIngredient ingredient) {
@@ -175,14 +227,18 @@ public final class RecipeNode {
             var previous = children.get(i);
             if (previous.inputSlot != slot) continue;
             if (previous.target.variantId().equals(identity)) return previous;
-            preferences.put(scopedVariantKey(slot), identity);
-            var replacement = new RecipeNode(chosen.get(), this, index, preferences);
-            replacement.inputSlot = slot;
-            replacement.expanded = previous.expanded;
-            children.set(i, replacement);
-            return replacement;
+            preferences.put(exactVariantKey(slot), identity);
+            return replaceInput(i, chosen.get());
         }
         return null;
+    }
+    private RecipeNode replaceInput(int childIndex, TreeIngredient ingredient) {
+        var previous = children.get(childIndex);
+        var replacement = new RecipeNode(ingredient, this, index, preferences);
+        replacement.inputSlot = previous.inputSlot;
+        replacement.expanded = previous.expanded;
+        children.set(childIndex, replacement);
+        return replacement;
     }
     public String status() {
         if (externalSupply || selected == null) return "外部供应";

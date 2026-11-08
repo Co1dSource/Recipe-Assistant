@@ -113,9 +113,16 @@ public final class RecipeTreeScreen extends Screen {
         jeiParent = jeiContext == null ? null : jeiContext.parent();
     }
     public void refresh() {
+        while (!attached(root)) root = root.parent;
+        while (!panels.isEmpty() && !attached(panels.peek().node)) back();
         requirements = null;
         requirements();
         layout = new TreeLayout(root);
+    }
+    private boolean attached(RecipeNode node) {
+        for (var child = node; child.parent != null; child = child.parent)
+            if (!child.parent.children.contains(child)) return false;
+        return true;
     }
     public void focus(RecipeNode node) {
         if (node != root) { roots.push(new View(root, targetRoot, panX, panY, zoom, quantity)); root = node; }
@@ -220,6 +227,8 @@ public final class RecipeTreeScreen extends Screen {
                     x + 28, y + 10, 97, 0x303030, 0x555555);
             if (node != targetRoot)
                 text(pose, node.status(), x + 6, y + 30, RECIPE_X - 9, node.cycle ? 0x995522 : 0x555555);
+            else if (!node.hasConfiguredProduction())
+                text(pose, "未配置", x + 6, y + 30, RECIPE_X - 9, 0x555555);
             boolean recipeButton = hasProductionChoice(node);
             boolean variantButton = node.inputVariants().size() > 1;
             boolean onRecipe = recipeButton && inside(tx, ty, x + RECIPE_X, y + ACTION_Y, 29, 15);
@@ -417,9 +426,8 @@ public final class RecipeTreeScreen extends Screen {
         if (p.mode == PanelMode.VARIANTS) {
             var source = p.node.children.stream().filter(child -> child.inputSlot() == chosen.slot()).findFirst().orElseThrow();
             targetRoot.chooseInputsAtDepth(source, chosen.ingredients().get(0));
-            var replacement = p.node.children.stream().filter(child -> child.inputSlot() == chosen.slot()).findFirst().orElseThrow();
-            replacement.load();
-            if (root == source) root = replacement;
+            if (root == source && attached(p.node))
+                root = p.node.children.stream().filter(child -> child.inputSlot() == chosen.slot()).findFirst().orElseThrow();
             panels.pop(); refresh();
         } else if (p.mode == PanelMode.OUTPUTS) {
             panels.clear(); retarget(chosen.ingredients().get(0), p.node.selected);

@@ -11,6 +11,7 @@ import com.cti.ctirecipeassistant.client.operation.SelectedRecipeSlots;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.mixin.RecipesGuiAccessor;
 import com.cti.ctirecipeassistant.recipe.JeiRecipeIndex;
+import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
 import com.cti.ctirecipeassistant.recipe.RecipePreferences;
 import com.mojang.blaze3d.vertex.PoseStack;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
@@ -57,7 +58,7 @@ public final class RecipeActionButtons {
     private static final Map<IRecipeLayoutDrawable<?>, CraftPreview> previews = new IdentityHashMap<>();
     private static long tick;
     private static final class CraftPreview {
-        final String target;
+        final Object target;
         final String sourceRecipe;
         final long revision = RecipePreferences.revision();
         final RecipeTreeScreen tree;
@@ -65,7 +66,7 @@ public final class RecipeActionButtons {
         private long checkedTick = -1;
         private String problem;
 
-        CraftPreview(String target, String sourceRecipe, RecipeTreeScreen tree, Screen parent) {
+        CraftPreview(Object target, String sourceRecipe, RecipeTreeScreen tree, Screen parent) {
             this.target = target;
             this.sourceRecipe = sourceRecipe;
             this.tree = tree;
@@ -132,6 +133,7 @@ public final class RecipeActionButtons {
         var parent = access.cti$getParentScreen();
         var pose = event.getPoseStack();
         List<Component> tooltip = List.of();
+        boolean control = Screen.hasControlDown();
         pose.pushPose();
         pose.translate(0, 0, 400);
         for (var layout : layouts) {
@@ -140,10 +142,15 @@ public final class RecipeActionButtons {
             var state = RecipeOperationDispatcher.buttonState(layout, mode, parent);
             CraftPreview craft = state.enabled() && normalCraft(mode) ? craftPreview(layout, mode, parent) : null;
             String problem = craft == null ? null : craft.problem();
-            button(layout, state.enabled() && problem == null).render(pose, event.getMouseX(), event.getMouseY(), event.getPartialTick());
-            if (isMouseOver(buttonArea(layout), event.getMouseX(), event.getMouseY())) {
+            boolean onButton = isMouseOver(buttonArea(layout), event.getMouseX(), event.getMouseY());
+            boolean onTarget = control && craft != null && layout.getRecipeSlotUnderMouse(event.getMouseX(), event.getMouseY())
+                    .filter(slot -> showsTarget(slot, craft.target)).isPresent();
+            boolean refill = craft != null && (onButton || onTarget) && canRefill(craft.tree, parent);
+            boolean enabled = state.enabled() && (control && craft != null && (onButton || onTarget) ? refill : problem == null);
+            button(layout, enabled).render(pose, event.getMouseX(), event.getMouseY(), event.getPartialTick());
+            if (control && refill) drawRefillTarget(pose, layout, craft.target);
+            if (onButton) {
                 if (normalCraft(mode)) drawMissingInputs(pose, layout, parent, craft);
-                boolean refill = craft != null && canRefill(craft.tree, parent);
                 tooltip = new ArrayList<>(operationTooltip(mode, RecipeInteractions.choosing(), refill));
                 if (craft != null && !craft.tree.finalRoot().hasConfiguredProduction())
                     tooltip.add(Component.literal("当前物品未配置配方树"));
@@ -168,7 +175,7 @@ public final class RecipeActionButtons {
     }
 
     private static CraftPreview craftPreview(IRecipeLayoutDrawable<?> layout, ClientRecipeOperation.Mode mode, Screen parent) {
-        String target = RecipeInteractions.target(layout).orElseThrow().key();
+        var target = MaterialRequirements.identity(RecipeInteractions.target(layout).orElseThrow());
         var previous = previews.get(layout);
         if (previous != null && previous.target.equals(target) && previous.revision == RecipePreferences.revision())
             return previous;
@@ -179,13 +186,27 @@ public final class RecipeActionButtons {
     }
 
     private static boolean canRefill(RecipeTreeScreen tree, Screen parent) {
-        if (tree.finalRoot().selected == null || !(parent instanceof AbstractContainerScreen<?> screen)
+        if (CraftExecutor.busy() || tree.finalRoot().selected == null || !(parent instanceof AbstractContainerScreen<?> screen)
                 || !OptionalIntegrations.refillAvailable(screen.getMenu()))
             return false;
         var requirements = tree.requirements();
         var materials = requirements.materials();
         return requirements.problem() == null && !OptionalIntegrations.refillOrders(materials,
                 OptionalIntegrations.supplies(screen.getMenu(), materials)).isEmpty();
+    }
+
+    private static boolean showsTarget(IRecipeSlotView slot, Object target) {
+        return slot.getRole() == RecipeIngredientRole.OUTPUT && slot.getDisplayedIngredient()
+                .map(RecipeInteractions::ingredient).map(MaterialRequirements::identity).filter(target::equals).isPresent();
+    }
+
+    private static void drawRefillTarget(PoseStack pose, IRecipeLayoutDrawable<?> layout, Object target) {
+        var area = layout.getRect();
+        pose.pushPose();
+        pose.translate(area.getX(), area.getY(), 0);
+        for (var slot : layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.OUTPUT))
+            if (showsTarget(slot, target)) slot.drawHighlight(pose, 0x664080FF);
+        pose.popPose();
     }
 
     private static void drawMissingInputs(PoseStack pose, IRecipeLayoutDrawable<?> layout, Screen parent, CraftPreview craft) {
@@ -251,6 +272,11 @@ public final class RecipeActionButtons {
             var craft = craftPreview(layout, mode, parent);
             if (refill && !canRefill(craft.tree, parent)
                     || !right && !refill && craft.craft.oneCraftProblem() != null) return;
+            var root = craft.tree.finalRoot();
+            if (root.selected != null && !root.hasConfiguredProduction()) {
+                root.select(root.selected);
+                craft.tree.refresh();
+            }
             button(layout, true).playDownSound(Minecraft.getInstance().getSoundManager());
             if (right) RecipeInteractions.openActionTree(operation(layout, mode, parent), gui, craft.tree);
             else Minecraft.getInstance().setScreen(new CraftQuantityScreen(gui, craft.tree, refill));

@@ -8,6 +8,7 @@ import net.minecraftforge.fml.loading.FMLPaths;
 import java.io.IOException;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
 
 public final class RecipePreferences {
@@ -17,6 +18,7 @@ public final class RecipePreferences {
     private final Path file;
     private JsonObject data = new JsonObject();
     private boolean writable = true;
+    private long readRevision = revision;
     public String error = "";
 
     public RecipePreferences() {
@@ -25,6 +27,9 @@ public final class RecipePreferences {
                 : "world:" + mc.getSingleplayerServer().getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
         file = FMLPaths.CONFIGDIR.get().resolve("ctirecipeassistant-preferences-"
                 + UUID.nameUUIDFromBytes(scope.getBytes(StandardCharsets.UTF_8)) + ".json");
+        read();
+    }
+    private void read() {
         if (Files.exists(file)) {
             try {
                 var parsed = JsonParser.parseString(Files.readString(file));
@@ -45,8 +50,14 @@ public final class RecipePreferences {
         return data.keySet().stream().filter(key -> key.startsWith(prefix)).map(this::get).toList();
     }
     public void put(String key, String value) {
-        revision++;
-        data.addProperty(key, value);
+        putAll(Map.of(key, value));
+    }
+    void putAll(Map<String, String> values) {
+        if (values.isEmpty()) return;
+        // Another tree or preview can save while this screen is retained.
+        if (writable && readRevision != revision) read();
+        readRevision = ++revision;
+        values.forEach(data::addProperty);
         if (!writable) return;
         try {
             Files.createDirectories(file.getParent());
