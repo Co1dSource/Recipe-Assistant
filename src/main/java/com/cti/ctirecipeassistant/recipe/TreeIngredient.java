@@ -17,7 +17,7 @@ public record TreeIngredient(ITypedIngredient<?> typed, String key, String name,
     public static <T> TreeIngredient of(ITypedIngredient<T> typed, IIngredientManager manager) {
         return of(typed, manager, false);
     }
-    static <T> TreeIngredient ofInput(ITypedIngredient<T> typed, IIngredientManager manager) {
+    public static <T> TreeIngredient ofInput(ITypedIngredient<T> typed, IIngredientManager manager) {
         return of(typed, manager, true);
     }
     private static <T> TreeIngredient of(ITypedIngredient<T> typed, IIngredientManager manager, boolean exactInput) {

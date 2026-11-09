@@ -42,6 +42,71 @@ public final class CraftQuantityScreen extends Screen {
         input = Long.toString(Math.min(Integer.MAX_VALUE, tree.targetQuantity()));
     }
 
+    public static Screen pattern(RecipesGui parent, java.util.List<TreeIngredient> materials) {
+        return new PatternAmountScreen(parent, materials);
+    }
+
+    private static final class PatternAmountScreen extends Screen {
+        private static final int WIDTH = 174, HEIGHT = 90;
+        private final RecipeInteractions.JeiContext jei;
+        private final AbstractContainerMenu menu;
+        private final java.util.List<TreeIngredient> materials;
+        private final long maximum;
+        private String input = "1";
+        private EditBox amount;
+        private Button confirm;
+
+        PatternAmountScreen(RecipesGui parent, java.util.List<TreeIngredient> materials) {
+            super(Component.literal("样板合成份数"));
+            this.materials = materials;
+            jei = RecipeInteractions.captureJei(parent);
+            menu = ((AbstractContainerScreen<?>) jei.parent()).getMenu();
+            maximum = Integer.MAX_VALUE / materials.stream().mapToLong(TreeIngredient::amount).max().orElseThrow();
+        }
+
+        @Override protected void init() {
+            int x = (width - WIDTH) / 2, y = (height - HEIGHT) / 2;
+            addRenderableWidget(new Button(x + 18, y + 29, 22, 18, Component.literal("−"), button -> adjust(-1)));
+            amount = addRenderableWidget(new EditBox(font, x + 46, y + 29, 82, 18, Component.literal("份数")));
+            amount.setMaxLength(10);
+            amount.setFilter(value -> value.chars().allMatch(c -> c >= '0' && c <= '9'));
+            amount.setValue(input);
+            addRenderableWidget(new Button(x + 134, y + 29, 22, 18, Component.literal("+"), button -> adjust(1)));
+            confirm = addRenderableWidget(new Button(x + 37, y + 59, 46, 18, Component.literal("确认"), button -> execute()));
+            addRenderableWidget(new Button(x + 91, y + 59, 46, 18, Component.literal("取消"), button -> onClose()));
+            amount.setResponder(value -> { input = value; refresh(); });
+            setInitialFocus(amount);
+            refresh();
+        }
+
+        private long batches() { return input.isEmpty() ? 0 : Long.parseLong(input); }
+        private void adjust(int delta) { amount.setValue(Long.toString(Math.max(1, Math.min(maximum, batches() + delta)))); }
+        private boolean sessionOpen() { return minecraft.player != null && minecraft.player.containerMenu == menu; }
+        private void refresh() {
+            long count = batches();
+            confirm.active = count > 0 && count <= maximum && sessionOpen()
+                    && !CraftExecutor.busy() && !OptionalIntegrations.busy() && OptionalIntegrations.refillAvailable(menu);
+        }
+        private void execute() {
+            refresh();
+            if (confirm.active && OptionalIntegrations.refill(menu, MaterialRequirements.inputsForBatches(materials, batches())))
+                minecraft.setScreen(jei.parent());
+        }
+        @Override public void tick() { amount.tick(); refresh(); }
+        @Override public void render(PoseStack pose, int x, int y, float partial) {
+            renderBackground(pose);
+            int left = (width - WIDTH) / 2, top = (height - HEIGHT) / 2;
+            CompactUi.panel(pose, left, top, WIDTH, HEIGHT);
+            font.draw(pose, title, (width - font.width(title)) / 2f, top + 11, 0x303030);
+            super.render(pose, x, y, partial);
+        }
+        @Override public boolean isPauseScreen() { return false; }
+        @Override public void onClose() {
+            if (sessionOpen()) RecipeInteractions.restoreJei(jei);
+            else minecraft.setScreen(null);
+        }
+    }
+
     @Override protected void init() {
         panelWidth = Math.min(216, width - 12);
         left = (width - panelWidth) / 2;

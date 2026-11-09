@@ -1,8 +1,10 @@
 package com.cti.ctirecipeassistant.integration.ae2;
 
 import appeng.api.crafting.PatternDetailsHelper;
+import appeng.blockentity.crafting.IMolecularAssemblerSupportedPattern;
 import appeng.client.gui.me.patternaccess.PatternAccessTermScreen;
 import appeng.client.gui.me.patternaccess.PatternContainerRecord;
+import appeng.core.definitions.AEBlocks;
 import appeng.menu.SlotSemantics;
 import com.cti.ctirecipeassistant.CtiRecipeAssistant;
 import com.cti.ctirecipeassistant.client.jei.TreeJeiPlugin;
@@ -10,14 +12,19 @@ import com.cti.ctirecipeassistant.integration.ae2.mixin.PatternAccessTermAccesso
 import com.cti.ctirecipeassistant.recipe.JeiRecipeIndex;
 import com.cti.ctirecipeassistant.recipe.RecipePreferences;
 import com.google.gson.*;
+import mezz.jei.api.constants.VanillaTypes;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /** Read-only contents and current native terminal records; no dependency on encoding history. */
 public final class PatternDistribution {
+    private static final Route CRAFTING_ROUTE = new Route("minecraft:crafting", "分子装配室");
     public record Provider(PatternContainerRecord record, String key, String name, String type, int free) {
         public long id() { return record.getServerId(); }
     }
@@ -86,9 +93,11 @@ public final class PatternDistribution {
             var row = new Row(entry.getValue(), contents, List.copyOf(routes.values()), counts.get(entry.getKey()));
             if (contents == null) row.reason = "样板无法解码";
             else {
-                loadChoice(row, preferences);
-                if (contents.kind() == PatternContents.Kind.CRAFTING) row.routes = List.of(new Route("minecraft:crafting", "分子装配室"));
-                else if (row.route == null && row.routes.isEmpty()) row.routes = PatternRecipeMatcher.find(contents, index);
+                if (contents.kind() == PatternContents.Kind.CRAFTING) row.routes = List.of(CRAFTING_ROUTE);
+                else {
+                    loadChoice(row, preferences);
+                    if (row.route == null && row.routes.isEmpty()) row.routes = PatternRecipeMatcher.find(contents, index);
+                }
             }
             append(result, row);
         }
@@ -114,13 +123,30 @@ public final class PatternDistribution {
         } catch (JsonParseException error) { CtiRecipeAssistant.LOGGER.warn("Invalid saved distribution choice; matching current pattern instead", error); }
     }
     static boolean assembler(Provider provider) {
-        var icon = provider.record().getGroup().icon();
-        return icon != null && icon.getId().toString().equals("ae2:molecular_assembler");
+        return AEBlocks.MOLECULAR_ASSEMBLER.isSameAs(provider.record().getGroup().icon());
     }
-    private static boolean compatible(Row row, Provider provider) { return row.contents.kind() != PatternContents.Kind.CRAFTING || assembler(provider); }
-    static boolean matches(Route route, Provider provider) {
-        return route.machine().equalsIgnoreCase(provider.name()) || provider.record().getGroup().tooltip().stream()
-                .anyMatch(line -> line.getString().equalsIgnoreCase(route.machine()));
+    private static Set<Item> machineItems(Route route) {
+        var runtime = TreeJeiPlugin.runtime;
+        var category = ResourceLocation.tryParse(route.category());
+        if (runtime == null || category == null) return Set.of();
+        var manager = runtime.getRecipeManager();
+        return manager.getRecipeType(category)
+                .map(type -> manager.createRecipeCatalystLookup(type).get(VanillaTypes.ITEM_STACK)
+                        .map(ItemStack::getItem).collect(Collectors.toSet())).orElseGet(Set::of);
+    }
+    private static void chooseAssembler(Row row, List<Provider> providers) {
+        Provider free = null;
+        boolean found = false;
+        for (var provider : providers) {
+            if (!assembler(provider)) continue;
+            found = true;
+            if (contains(provider, row.contents)) {
+                row.choice = new Choice(provider, CRAFTING_ROUTE); row.reason = ""; return;
+            }
+            if (free == null && provider.free() > 0) free = provider;
+        }
+        if (free != null) row.choice = new Choice(free, CRAFTING_ROUTE);
+        row.reason = free != null ? "" : found ? "分子装配室没有空位" : "未找到分子装配室";
     }
     public static boolean contains(Provider provider, PatternContents contents) {
         var inventory = provider.record().getInventory();
@@ -137,25 +163,39 @@ public final class PatternDistribution {
                                        Map<String, Choice> batch, boolean forceManual) {
         row.choice = null;
         if (row.contents == null) return List.of();
-        var eligible = providers.stream().filter(p -> compatible(row, p)).toList();
+        if (row.contents.kind() == PatternContents.Kind.CRAFTING) {
+            chooseAssembler(row, providers);
+            return List.of();
+        }
         var routes = row.route != null ? List.of(row.route) : row.routes;
         if (routes.isEmpty()) routes = List.of(new Route("manual:" + row.contents.identity(), "自定义样板"));
+        var candidates = new ArrayList<Choice>();
+        for (var route : routes) {
+            boolean manual = route.category().startsWith("manual:");
+            var machines = manual ? Set.<Item>of() : machineItems(route);
+            for (var provider : providers) {
+                var icon = provider.record().getGroup().icon();
+                if (icon != null && (!assembler(provider) || row.contents.details() instanceof IMolecularAssemblerSupportedPattern)
+                        && (manual || machines.contains(icon.getItem())))
+                    candidates.add(new Choice(provider, route));
+            }
+        }
         var single = routes.size() == 1 ? routes.get(0) : null;
         var remembered = single == null ? null : batch.get("pattern|" + row.contents.identity());
         if (remembered == null && single != null) remembered = batch.get(row.routeKey(single));
         if (remembered != null) {
             var previous = remembered;
-            var live = eligible.stream().filter(p -> p.id() == previous.provider().id() && p.key().equals(previous.provider().key())).findFirst();
+            var live = candidates.stream().map(Choice::provider)
+                    .filter(p -> p.id() == previous.provider().id() && p.key().equals(previous.provider().key())).findFirst();
             if (live.isPresent() && usable(row, live.get()) && !forceManual) {
                 row.choice = new Choice(live.get(), previous.route()); row.reason = ""; return List.of();
             }
             forceManual = true; row.reason = live.isEmpty() ? "原供应器已失效" : "供应器空间不足";
         }
         if (single != null && remembered == null) {
-            String group = row.savedGroup.isEmpty() ? preferences.get("provider-group|" + single.category() + "|"
-                    + (row.contents.kind() == PatternContents.Kind.CRAFTING ? "Crafting" : "Processing")) : row.savedGroup;
+            String group = row.savedGroup.isEmpty() ? preferences.get("provider-group|" + single.category() + "|Processing") : row.savedGroup;
             if (!group.isEmpty()) {
-                var saved = eligible.stream().filter(p -> p.key().equals(group)).toList();
+                var saved = candidates.stream().map(Choice::provider).filter(p -> p.key().equals(group)).toList();
                 if (saved.size() == 1 && usable(row, saved.get(0)) && !forceManual) {
                     row.choice = new Choice(saved.get(0), single); row.reason = ""; return List.of();
                 }
@@ -163,15 +203,11 @@ public final class PatternDistribution {
                 if (row.reason.isEmpty()) row.reason = saved.size() == 1 ? "供应器空间不足" : "原分组需要重新选择";
             }
         }
-        var candidates = new ArrayList<Choice>();
-        for (var route : routes) for (var provider : eligible)
-            if (row.contents.kind() == PatternContents.Kind.CRAFTING || matches(route, provider)) candidates.add(new Choice(provider, route));
         var available = candidates.stream().filter(c -> usable(row, c.provider())).toList();
         if (!forceManual && single != null && !single.category().startsWith("manual:") && available.size() == 1) {
             row.choice = available.get(0); row.reason = ""; return List.of();
         }
-        if (candidates.isEmpty()) for (var route : routes) for (var provider : eligible) candidates.add(new Choice(provider, route));
-        if (row.reason.isEmpty()) row.reason = candidates.isEmpty() ? "无法匹配供应器" : candidates.stream().noneMatch(c -> usable(row, c.provider()))
+        if (row.reason.isEmpty()) row.reason = candidates.isEmpty() ? "未找到兼容的供应器" : available.isEmpty()
                 ? "供应器空间不足" : "";
         return List.copyOf(candidates);
     }

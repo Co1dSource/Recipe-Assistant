@@ -19,12 +19,24 @@ public final class PatternRecordStore {
         data.addProperty("patternContent", content);
         data.addProperty("categoryUid", entry.node.selected.category());
         data.addProperty("machine", entry.node.selected.machine());
-        data.addProperty("target", entry.node.target.key());
-        data.addProperty("targetName", entry.output().name());
-        data.addProperty("outputAmount", entry.output().amount());
+        var primary = entry.crafting ? null : entry.processingOutput(0);
+        data.addProperty("target", primary == null ? entry.node.target.key() : canonical(primary.what().toTagGeneric()));
+        data.addProperty("targetName", primary == null ? entry.output().name() : primary.what().getDisplayName().getString());
+        data.addProperty("outputAmount", primary == null ? entry.output().amount() : primary.amount());
         data.addProperty("type", entry.crafting ? "Crafting" : "Processing");
         var inputs = new JsonArray();
-        for (int i = 0; i < entry.node.selected.inputs().size(); i++) if (!entry.node.selected.inputs().get(i).isEmpty()) {
+        if (entry.edited() || !entry.crafting) {
+            for (int i = 0; i < (entry.crafting ? 9 : entry.processingSize()); i++) {
+                var stack = entry.input(i);
+                if (stack == null) continue;
+                var input = new JsonObject();
+                input.addProperty("slot", i);
+                input.addProperty("ingredient", canonical(stack.what().toTagGeneric()));
+                input.addProperty("name", stack.what().getDisplayName().getString());
+                input.addProperty("amount", stack.amount());
+                inputs.add(input);
+            }
+        } else for (int i = 0; i < entry.node.selected.inputs().size(); i++) if (!entry.node.selected.inputs().get(i).isEmpty()) {
             var ingredient = entry.node.selectedInput(i);
             var input = new JsonObject();
             input.addProperty("slot", i); input.addProperty("ingredient", ingredient.key());

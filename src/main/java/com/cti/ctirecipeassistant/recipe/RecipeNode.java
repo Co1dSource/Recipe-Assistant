@@ -240,6 +240,20 @@ public final class RecipeNode {
         children.set(childIndex, replacement);
         return replacement;
     }
+    /** Update a slot in the private encoding preview without saving a tree preference. */
+    public void editPreviewInput(int slot, TreeIngredient ingredient) {
+        int i = 0;
+        while (i < children.size() && children.get(i).inputSlot < slot) i++;
+        if (i < children.size() && children.get(i).inputSlot == slot) {
+            if (ingredient == null) children.remove(i);
+            else if (!MaterialRequirements.identity(children.get(i).target).equals(MaterialRequirements.identity(ingredient)))
+                replaceInput(i, ingredient);
+        } else if (ingredient != null) {
+            var child = new RecipeNode(ingredient, this, index, preferences);
+            child.inputSlot = slot;
+            children.add(i, child);
+        }
+    }
     public String status() {
         if (externalSupply || selected == null) return "外部供应";
         if (cycle && loaded) return "循环，停止展开";

@@ -31,6 +31,15 @@ public record MaterialRequirements(List<TreeIngredient> materials, List<TreeIngr
         return ingredient.typed().getIngredient() instanceof ItemStack stack ? ItemIdentity.of(stack) : ingredient.key();
     }
 
+    public static List<TreeIngredient> inputsForBatches(List<TreeIngredient> inputs, long batches) {
+        var totals = new LinkedHashMap<Object, TreeIngredient>();
+        for (var input : inputs) {
+            var scaled = counted(input, Math.multiplyExact(input.amount(), batches));
+            totals.merge(identity(input), scaled, (a, b) -> counted(a, Math.addExact(a.amount(), b.amount())));
+        }
+        return List.copyOf(totals.values());
+    }
+
     private static TreeIngredient counted(TreeIngredient ingredient, long amount) {
         return new TreeIngredient(ingredient.typed(), ingredient.key(), ingredient.name(), amount, ingredient.unit());
     }

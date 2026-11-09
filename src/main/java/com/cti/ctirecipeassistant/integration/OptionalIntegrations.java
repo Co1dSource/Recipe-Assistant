@@ -52,6 +52,12 @@ public final class OptionalIntegrations {
     public static Map<Object, Supply> supplies(AbstractContainerMenu menu, List<TreeIngredient> materials) {
         return refillAvailable(menu) ? ae2.supplies(menu, materials) : Map.of();
     }
+    public static boolean sourcesCover(List<TreeIngredient> materials, Map<Object, Supply> stock) {
+        return !materials.isEmpty() && materials.stream().allMatch(material -> {
+            var supply = stock.getOrDefault(MaterialRequirements.identity(material), Supply.MISSING);
+            return supply.stored() >= material.amount() || supply.craftable();
+        });
+    }
     public static List<TreeIngredient> refillOrders(List<TreeIngredient> materials, Map<Object, Supply> stock) {
         var orders = new ArrayList<TreeIngredient>();
         for (var material : materials) {

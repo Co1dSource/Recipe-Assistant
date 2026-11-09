@@ -3,7 +3,6 @@ package com.cti.ctirecipeassistant.integration.ae2;
 import appeng.api.stacks.AEFluidKey;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
-import appeng.api.stacks.AmountFormat;
 import appeng.client.gui.me.crafting.CraftAmountScreen;
 import appeng.client.gui.widgets.NumberEntryWidget;
 import appeng.helpers.InventoryAction;
@@ -12,7 +11,6 @@ import appeng.menu.me.common.MEStorageMenu;
 import appeng.menu.me.crafting.CraftAmountMenu;
 import appeng.menu.me.crafting.CraftConfirmMenu;
 import com.cti.ctirecipeassistant.client.operation.ItemIdentity;
-import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations.Supply;
 import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
@@ -41,7 +39,7 @@ public final class Ae2Refill {
     private Phase phase = Phase.TERMINAL;
     private MEStorageMenu requestedFrom;
     private AEKey requestedKey;
-    private long shortage;
+    private int requestedAmount;
     private int ticks;
 
     private Ae2Refill(MEStorageMenu menu, List<TreeIngredient> materials) {
@@ -66,10 +64,9 @@ public final class Ae2Refill {
     }
 
     static boolean start(AbstractContainerMenu menu, List<TreeIngredient> materials) {
-        var terminal = (MEStorageMenu) menu;
-        var missing = OptionalIntegrations.refillOrders(materials, supplies(terminal, materials));
-        if (missing.isEmpty()) return false;
-        active = new Ae2Refill(terminal, missing);
+        if (active != null || materials.isEmpty() || materials.stream().anyMatch(m -> m.amount() <= 0 || m.amount() > Integer.MAX_VALUE))
+            return false;
+        active = new Ae2Refill((MEStorageMenu) menu, materials);
         return true;
     }
 
@@ -96,13 +93,11 @@ public final class Ae2Refill {
         var what = screen.getMenu().getWhatToCraft();
         if (what == null) return;
         if (!what.what().equals(active.requestedKey)) { active = null; return; }
-        amount.setLongValue(active.shortage);
-        if (amount.getLongValue().orElse(0) != active.shortage) {
-            String requested = what.what().formatAmount(active.shortage, AmountFormat.FULL);
-            screen.getMenu().getPlayer().displayClientMessage(
-                    Component.literal("ME 补料：实际缺量 " + requested + " 超出原生数量框范围"), false);
-        }
+        int requested = active.requestedAmount;
+        amount.setLongValue(requested);
         active.phase = Phase.AMOUNT;
+        active.ticks = 0;
+        screen.getMenu().confirm(requested, false);
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)
@@ -110,7 +105,7 @@ public final class Ae2Refill {
         if (active == null) return;
         if (!(event.getNewScreen() instanceof AbstractContainerScreen<?> screen)) { active = null; return; }
         if (active.phase == Phase.AMOUNT && screen.getMenu() instanceof CraftConfirmMenu) active.phase = Phase.CONFIRM;
-        else if (active.phase == Phase.CONFIRM && screen.getMenu() instanceof CraftAmountMenu) active.phase = Phase.AMOUNT;
+        else if (active.phase == Phase.CONFIRM && screen.getMenu() instanceof CraftAmountMenu) active = null;
     }
 
     @SubscribeEvent
@@ -124,8 +119,8 @@ public final class Ae2Refill {
                 || screen.getMenu() != mc.player.containerMenu) { active = null; return; }
         var menu = screen.getMenu();
         if (menu instanceof CraftAmountMenu) {
-            if (phase == Phase.CONFIRM) phase = Phase.AMOUNT;
-            if (phase == Phase.OPENING_AMOUNT) waitForSync();
+            if (phase == Phase.CONFIRM) active = null;
+            else if (phase == Phase.OPENING_AMOUNT || phase == Phase.AMOUNT) waitForSync();
             return;
         }
         if (menu instanceof CraftConfirmMenu && (phase == Phase.AMOUNT || phase == Phase.CONFIRM)) {
@@ -149,26 +144,19 @@ public final class Ae2Refill {
         if (!available(terminal) || terminal.getClientRepo().getAllEntries().isEmpty()) {
             waitForSync(); return;
         }
-        var entries = entries(terminal);
-        while (!remaining.isEmpty()) {
-            var material = remaining.removeFirst();
-            var entry = entries.get(key(material));
-            var supply = supply(entry);
-            if (supply.stored() >= material.amount()) continue;
-            if (!supply.craftable()) {
-                active = null;
-                mc.player.displayClientMessage(Component.literal("ME 补料已停止，无法供应：" + material.name()), false);
-                return;
-            }
-            requestedFrom = terminal;
-            requestedKey = entry.getWhat();
-            shortage = material.amount() - entry.getStoredAmount();
-            phase = Phase.OPENING_AMOUNT;
-            ticks = 0;
-            terminal.handleInteraction(entry.getSerial(), InventoryAction.AUTO_CRAFT);
+        var material = remaining.removeFirst();
+        var entry = entries(terminal).get(key(material));
+        if (entry == null) {
+            active = null;
+            mc.player.displayClientMessage(Component.literal("AE2 终端没有此材料的请求条目：" + material.name()), false);
             return;
         }
-        active = null;
+        requestedFrom = terminal;
+        requestedKey = entry.getWhat();
+        requestedAmount = Math.toIntExact(material.amount());
+        phase = Phase.OPENING_AMOUNT;
+        ticks = 0;
+        terminal.handleInteraction(entry.getSerial(), InventoryAction.AUTO_CRAFT);
     }
 
     private void waitForSync() {

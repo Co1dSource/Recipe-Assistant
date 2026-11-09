@@ -228,7 +228,7 @@ public final class RecipeTreeScreen extends Screen {
             if (node != targetRoot)
                 text(pose, node.status(), x + 6, y + 30, RECIPE_X - 9, node.cycle ? 0x995522 : 0x555555);
             else if (!node.hasConfiguredProduction())
-                text(pose, "未配置", x + 6, y + 30, RECIPE_X - 9, 0x555555);
+                text(pose, "未配置", x + 6, y + 30, RECIPE_X - 9, 0xA02020);
             boolean recipeButton = hasProductionChoice(node);
             boolean variantButton = node.inputVariants().size() > 1;
             boolean onRecipe = recipeButton && inside(tx, ty, x + RECIPE_X, y + ACTION_Y, 29, 15);

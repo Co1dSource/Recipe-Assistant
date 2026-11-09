@@ -57,10 +57,17 @@ public final class PatternEncoder {
         public final IRecipeLayoutDrawable<?> layout;
         public final boolean crafting;
         public final Map<Integer, Long> amounts = new HashMap<>();
+        private final Map<Integer, ItemStack> edits;
+        private final List<GenericStack> defaultInputs;
+        boolean editable;
         Substitutions substitutions;
         public String problem;
         Entry(RecipeNode node, IRecipeLayoutDrawable<?> layout, RecipePreferences preferences) {
+            this(node, layout, preferences, Map.of());
+        }
+        Entry(RecipeNode node, IRecipeLayoutDrawable<?> layout, RecipePreferences preferences, Map<Integer, ItemStack> edits) {
             this.node = node; this.layout = layout;
+            this.edits = Map.copyOf(edits);
             crafting = layout != null && layout.getRecipe() instanceof CraftingRecipe;
             if (!crafting) for (int i = 0; i < node.selected.inputs().size(); i++) {
                 String saved = preferences.get(amountKey(i));
@@ -69,24 +76,55 @@ public final class PatternEncoder {
                     if (value <= Integer.MAX_VALUE) amounts.put(i, value);
                 }
             }
+            defaultInputs = crafting || layout == null ? List.of() : defaultInputs();
         }
         public String amountKey(int input) { return node.amountKey(input); }
         String patternKey() { return PatternEncoder.patternKey(node); }
-        RecipeNode inputNode(AEKey key) {
-            for (var child : node.children) {
-                var stack = GenericEntryStackHelper.ingredientToStack(child.target.typed());
-                if (stack != null && stack.what().equals(key)) return child;
-            }
-            return null;
-        }
         public PatternEncodingSlots slots() { return new PatternEncodingSlots(layout.getRecipeSlotsView(), node, amounts); }
         public TreeIngredient output() { return node.selected.output(node.target.key()); }
         public List<GenericStack> inputs() {
-            var merged = new LinkedHashMap<AEKey, Long>();
-            for (var candidates : GenericEntryStackHelper.ofInputs(slots())) if (!candidates.isEmpty()) {
-                var stack = candidates.get(0); merged.merge(stack.what(), stack.amount(), Long::sum);
+            if (!edited()) return defaultInputs();
+            var inputs = new ArrayList<GenericStack>();
+            for (int i = 0, size = processingSize(); i < size; i++) {
+                var input = processingInput(i);
+                if (input != null) inputs.add(input);
             }
-            return merged.entrySet().stream().map(e -> new GenericStack(e.getKey(), e.getValue())).toList();
+            return inputs;
+        }
+        private List<GenericStack> defaultInputs() {
+            return GenericEntryStackHelper.ofInputs(slots()).stream().filter(candidates -> !candidates.isEmpty())
+                    .map(candidates -> candidates.get(0)).toList();
+        }
+        boolean edited() { return !edits.isEmpty(); }
+        int processingSize() {
+            return Math.max(defaultInputs.size(), edits.keySet().stream().filter(i -> i >= 0).mapToInt(i -> i + 1).max().orElse(0));
+        }
+        int processingOutputSize() {
+            return Math.max(1, edits.keySet().stream().filter(i -> i < 0).mapToInt(i -> -i).max().orElse(0));
+        }
+        static int outputEditKey(int slot) { return ~slot; }
+        GenericStack processingOutput(int slot) {
+            var edit = edits.get(outputEditKey(slot));
+            return edit != null ? GenericStack.fromItemStack(edit)
+                    : slot == 0 ? GenericEntryStackHelper.ingredientToStack(output().typed()) : null;
+        }
+        int recipeInputSlot(int cell) {
+            for (int slot = 0; slot < node.selected.inputs().size(); slot++)
+                if (!node.selected.inputs().get(slot).isEmpty() && cell-- == 0) return slot;
+            return -1;
+        }
+        GenericStack defaultInput(int slot) { return slot < defaultInputs.size() ? defaultInputs.get(slot) : null; }
+        GenericStack processingInput(int slot) {
+            return edits.containsKey(slot) ? GenericStack.fromItemStack(edits.get(slot)) : defaultInput(slot);
+        }
+        ItemStack craftingInput(int slot) {
+            var edited = edits.get(slot);
+            if (edited != null) return edited;
+            return node.selected.inputs().get(slot).isEmpty() ? ItemStack.EMPTY
+                    : (ItemStack) node.selectedInput(slot).typed().getIngredient();
+        }
+        GenericStack input(int slot) {
+            return crafting ? GenericStack.fromItemStack(craftingInput(slot)) : processingInput(slot);
         }
     }
     public record Preview(PatternEncodingTermMenu menu, Screen terminal, TreeIngredient target,
@@ -113,6 +151,10 @@ public final class PatternEncoder {
 
     public static Preview prepare(ClientRecipeOperation<?> operation, RecipeNode root, JeiRecipeIndex index,
                                    RecipePreferences preferences, Set<String> removed) {
+        return prepare(operation, root, index, preferences, removed, Map.of());
+    }
+    static Preview prepare(ClientRecipeOperation<?> operation, RecipeNode root, JeiRecipeIndex index,
+                           RecipePreferences preferences, Set<String> removed, Map<String, Map<Integer, ItemStack>> edits) {
         var screen = (AbstractContainerScreen<?>) operation.parentScreen();
         var menu = (PatternEncodingTermMenu) screen.getMenu();
         var plan = PatternPlanner.planEncoding(root);
@@ -121,7 +163,7 @@ public final class PatternEncoder {
         var substitutions = new Substitutions(menu.isSubstitute(), menu.isSubstituteFluids());
         for (var node : plan.steps()) {
             if (removed.contains(patternKey(node))) continue;
-            var entry = new Entry(node, index.layout(node.selected.id()), preferences);
+            var entry = new Entry(node, index.layout(node.selected.id()), preferences, edits.getOrDefault(patternKey(node), Map.of()));
             entry.substitutions = substitutions;
             entry.problem = validate(entry, menu);
             if (entry.problem != null) problems.add(new PatternPlanner.Issue(node, PatternPlanner.ProblemType.UNSUPPORTED,
@@ -156,15 +198,18 @@ public final class PatternEncoder {
         if (entry.crafting) {
             if (node.selected.inputs().size() != 9 || !((CraftingRecipe) entry.layout.getRecipe()).canCraftInDimensions(3, 3))
                 return "工作台布局不是普通 3×3 配方";
+            entry.editable = true;
             var grid = new CraftingContainer(new AutoCraftingMenu(), 3, 3);
-            for (int i = 0; i < 9; i++) if (!node.selected.inputs().get(i).isEmpty())
-                grid.setItem(i, ((ItemStack) node.selectedInput(i).typed().getIngredient()).copy());
+            for (int i = 0; i < 9; i++) grid.setItem(i, entry.craftingInput(i).copy());
             var recipe = (CraftingRecipe) entry.layout.getRecipe();
             if (!recipe.matches(grid, Minecraft.getInstance().level)
                     || !(entry.output().typed().getIngredient() instanceof ItemStack expected)
                     || !ItemStack.matches(recipe.assemble(grid), expected)) return "所选工作台原料与目标输出不匹配";
-        } else if (entry.inputs().isEmpty() || entry.inputs().size() > menu.getProcessingInputSlots().length) {
-            return "处理样板输入为空或超过终端槽位上限";
+        } else {
+            entry.editable = entry.processingSize() <= menu.getProcessingInputSlots().length
+                    && entry.processingOutputSize() <= menu.getProcessingOutputSlots().length;
+            if (!entry.editable || entry.inputs().isEmpty() || entry.processingOutput(0) == null)
+                return "处理样板缺少输入或主要产物，或超过终端槽位上限";
         }
         return null;
     }
@@ -277,10 +322,13 @@ public final class PatternEncoder {
         }
         // A pre-existing exact layout needs no transfer and no artificial sync delay.
         if (ready(entry)) { state = State.TRANSFER; ticks = 0; return; }
+        if (entry.edited() || !entry.crafting) {
+            fillEdited(entry);
+            state = State.TRANSFER; ticks = 0; return;
+        }
         var transfer = handler(entry.layout, task.menu);
         if (transfer == null) { finish("AE2 JEI 编码处理器已失效"); return; }
-        Object recipe = entry.crafting ? entry.layout.getRecipe() : entry.slots();
-        // Non-crafting displays intentionally use AE2's processing path, including stonecutting/smithing categories.
+        Object recipe = entry.layout.getRecipe();
         mezz.jei.api.recipe.transfer.IRecipeTransferError error;
         try {
             error = transfer.transferRecipe(task.menu, recipe, entry.slots(), Minecraft.getInstance().player, false, true);
@@ -291,13 +339,25 @@ public final class PatternEncoder {
         if (error != null && !error.getType().allowsTransfer) { finish("AE2 拒绝填入当前配方，请检查原 JEI 提示"); return; }
         if (entry.crafting) {
             for (int i = 0; i < 9; i++) {
-                var stack = entry.node.selected.inputs().get(i).isEmpty() ? ItemStack.EMPTY
-                        : ((ItemStack) entry.node.selectedInput(i).typed().getIngredient()).copy();
-                NetworkHandler.instance().sendToServer(new InventoryActionPacket(InventoryAction.SET_FILTER,
-                        task.menu.getCraftingGridSlots()[i].index, stack));
+                setFilter(task.menu.getCraftingGridSlots()[i], entry.craftingInput(i));
             }
         }
         state = State.TRANSFER; ticks = 0;
+    }
+    private static void setFilter(Slot slot, ItemStack stack) {
+        NetworkHandler.instance().sendToServer(new InventoryActionPacket(InventoryAction.SET_FILTER, slot.index, stack.copy()));
+    }
+    private static void fillEdited(Entry entry) {
+        var menu = task.menu;
+        menu.setMode(entry.crafting ? EncodingMode.CRAFTING : EncodingMode.PROCESSING);
+        if (entry.crafting) {
+            for (int i = 0; i < 9; i++) setFilter(menu.getCraftingGridSlots()[i], entry.craftingInput(i));
+        } else {
+            var inputs = menu.getProcessingInputSlots();
+            var outputs = menu.getProcessingOutputSlots();
+            for (int i = 0; i < inputs.length; i++) setFilter(inputs[i], GenericStack.wrapInItemStack(entry.processingInput(i)));
+            for (int i = 0; i < outputs.length; i++) setFilter(outputs[i], GenericStack.wrapInItemStack(entry.processingOutput(i)));
+        }
     }
 
     private static boolean ready(Entry entry) {
@@ -306,38 +366,41 @@ public final class PatternEncoder {
         if (menu.getMode() != (entry.crafting ? EncodingMode.CRAFTING : EncodingMode.PROCESSING)) return false;
         if (entry.crafting) {
             for (int i = 0; i < 9; i++) {
-                var expected = entry.node.selected.inputs().get(i).isEmpty() ? ItemStack.EMPTY
-                        : (ItemStack) entry.node.selectedInput(i).typed().getIngredient();
+                var expected = entry.craftingInput(i);
                 if (!ItemStack.matches(menu.getCraftingGridSlots()[i].getItem(), expected)) return false;
             }
             return ItemStack.matches(menu.getSlots(SlotSemantics.CRAFTING_RESULT).get(0).getItem(),
                     (ItemStack) entry.output().typed().getIngredient());
         }
-        return match(menu.getProcessingInputSlots(), entry.inputs())
-                && match(menu.getProcessingOutputSlots(), List.of(GenericEntryStackHelper.ingredientToStack(entry.output().typed())));
-    }
-    private static boolean match(Slot[] slots, List<GenericStack> expected) {
-        for (int i = 0; i < slots.length; i++) if (!Objects.equals(GenericStack.fromItemStack(slots[i].getItem()),
-                i < expected.size() ? expected.get(i) : null)) return false;
+        var slots = menu.getProcessingInputSlots();
+        for (int i = 0; i < slots.length; i++)
+            if (!Objects.equals(GenericStack.fromItemStack(slots[i].getItem()), entry.processingInput(i))) return false;
+        var outputs = menu.getProcessingOutputSlots();
+        for (int i = 0; i < outputs.length; i++)
+            if (!Objects.equals(GenericStack.fromItemStack(outputs[i].getItem()), entry.processingOutput(i))) return false;
         return true;
     }
     private static boolean validEncoded(Entry entry, ItemStack stack) {
         var decoded = PatternDetailsHelper.decodePattern(stack, Minecraft.getInstance().level);
-        var target = GenericEntryStackHelper.ingredientToStack(entry.output().typed());
-        if (decoded == null || !Objects.equals(decoded.getPrimaryOutput(), target)) return false;
         if (entry.crafting) {
-            if (!(decoded instanceof AECraftingPattern pattern) || !entry.substitutions.matches(pattern)) return false;
+            var target = GenericEntryStackHelper.ingredientToStack(entry.output().typed());
+            if (!(decoded instanceof AECraftingPattern pattern) || !Objects.equals(decoded.getPrimaryOutput(), target)
+                    || !entry.substitutions.matches(pattern)) return false;
             var actual = pattern.getSparseInputs();
             for (int i = 0; i < 9; i++) {
-                var expected = entry.node.selected.inputs().get(i).isEmpty() ? null
-                        : GenericEntryStackHelper.ingredientToStack(entry.node.selectedInput(i).typed());
+                var expected = entry.input(i);
                 if (!Objects.equals(actual[i], expected)) return false;
             }
             return true;
         }
         if (!(decoded instanceof AEProcessingPattern processing)) return false;
-        var inputs = Arrays.stream(processing.getSparseInputs()).filter(Objects::nonNull).toList();
-        return inputs.equals(entry.inputs()) && decoded.getOutputs().length == 1;
+        var actual = processing.getSparseInputs();
+        for (int i = 0; i < Math.max(actual.length, entry.processingSize()); i++)
+            if (!Objects.equals(i < actual.length ? actual[i] : null, entry.processingInput(i))) return false;
+        var outputs = processing.getSparseOutputs();
+        for (int i = 0; i < Math.max(outputs.length, entry.processingOutputSize()); i++)
+            if (!Objects.equals(i < outputs.length ? outputs[i] : null, entry.processingOutput(i))) return false;
+        return true;
     }
 
 
@@ -383,14 +446,13 @@ public final class PatternEncoder {
         if (!busy()) return;
         var screen = event.getScreen(); var mc = Minecraft.getInstance(); var pose = event.getPoseStack();
         pose.pushPose(); pose.translate(0, 0, 700);
-        Screen.fill(pose, 0, 0, screen.width, 42, 0xEE303030);
-        String progress = current().node.target.name() + "（" + current().node.selected.machine() + "） 已完成 "
-                + completed + "/" + task.entries.size() + " 剩余 " + (task.entries.size() - completed);
-        Screen.drawString(pose, mc.font, mc.font.plainSubstrByWidth(progress, Math.max(20, screen.width - 65)), 5, 5, 0xFFFFFF);
+        Screen.fill(pose, screen.width - 55, 0, screen.width, 21, 0xEE303030);
         Screen.drawString(pose, mc.font, cancelling ? "正在取消" : "取消", screen.width - 48, 5, 0xFFE0A0);
-        String status = state == State.PAUSED ? message : "等待同步";
-        Screen.drawString(pose, mc.font, mc.font.plainSubstrByWidth(status, Math.max(20, screen.width - 65)), 5, 24, 0xFFFFFF);
-        if (state == State.PAUSED) Screen.drawString(pose, mc.font, "继续", screen.width - 48, 24, 0xFFE0A0);
+        if (state == State.PAUSED) {
+            Screen.fill(pose, 0, 21, screen.width, 42, 0xEE303030);
+            Screen.drawString(pose, mc.font, mc.font.plainSubstrByWidth(message, Math.max(20, screen.width - 65)), 5, 24, 0xFFFFFF);
+            Screen.drawString(pose, mc.font, "继续", screen.width - 48, 24, 0xFFE0A0);
+        }
         pose.popPose();
     }
     @SubscribeEvent(priority = EventPriority.HIGHEST)

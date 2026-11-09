@@ -3,6 +3,7 @@ package com.cti.ctirecipeassistant.client.jei;
 import com.cti.ctirecipeassistant.CtiRecipeAssistant;
 import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
+import mezz.jei.api.registration.IGuiHandlerRegistration;
 import mezz.jei.api.runtime.IJeiRuntime;
 import net.minecraft.resources.ResourceLocation;
 
@@ -12,6 +13,11 @@ public final class TreeJeiPlugin implements IModPlugin {
 
     @Override public ResourceLocation getPluginUid() {
         return new ResourceLocation("ctirecipeassistant", "tree");
+    }
+
+    @Override public void registerGuiHandlers(IGuiHandlerRegistration registration) {
+        if (net.minecraftforge.fml.ModList.get().isLoaded("ae2"))
+            com.cti.ctirecipeassistant.integration.ae2.PatternPreviewScreen.registerGuiHandlers(registration);
     }
     @Override public void onRuntimeAvailable(IJeiRuntime value) {
         runtime = value;
