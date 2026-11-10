@@ -1,20 +1,28 @@
 package com.cti.ctirecipeassistant.integration.ae2;
 
+import appeng.api.networking.crafting.CraftingSubmitErrorCode;
 import appeng.api.stacks.AEFluidKey;
 import appeng.api.stacks.AEItemKey;
 import appeng.api.stacks.AEKey;
 import appeng.client.gui.me.crafting.CraftAmountScreen;
+import appeng.client.gui.me.crafting.CraftConfirmScreen;
 import appeng.client.gui.widgets.NumberEntryWidget;
+import appeng.core.localization.GuiText;
+import appeng.core.sync.packets.CraftingJobStatusPacket.Status;
 import appeng.helpers.InventoryAction;
 import appeng.menu.me.common.GridInventoryEntry;
 import appeng.menu.me.common.MEStorageMenu;
 import appeng.menu.me.crafting.CraftAmountMenu;
 import appeng.menu.me.crafting.CraftConfirmMenu;
+import com.cti.ctirecipeassistant.client.gui.CompactUi;
+import com.cti.ctirecipeassistant.client.operation.CraftExecutor;
 import com.cti.ctirecipeassistant.client.operation.ItemIdentity;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations.Supply;
 import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.network.chat.Component;
@@ -25,26 +33,35 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fluids.FluidStack;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.*;
+import java.util.function.Consumer;
 
-/** Opens one native request at a time and leaves submission to AE2's screens. */
+/** Submits each material through AE2's native confirmation screens. */
 public final class Ae2Refill {
-    private enum Phase { TERMINAL, OPENING_AMOUNT, AMOUNT, CONFIRM }
+    private enum Phase { TERMINAL, OPENING_AMOUNT, AMOUNT, CONFIRM, FINAL }
+    private static final int CANCEL_WIDTH = 42, CANCEL_HEIGHT = 18, CANCEL_MARGIN = 4;
     private static Ae2Refill active;
 
     private final ClientLevel level = Minecraft.getInstance().level;
     private final MEStorageMenu original;
     private final Deque<TreeIngredient> remaining;
+    private final List<TreeIngredient> required;
+    private final Consumer<Screen> finish;
+    private String jobId;
+    private boolean started;
     private Phase phase = Phase.TERMINAL;
     private MEStorageMenu requestedFrom;
     private AEKey requestedKey;
     private int requestedAmount;
     private int ticks;
 
-    private Ae2Refill(MEStorageMenu menu, List<TreeIngredient> materials) {
+    private Ae2Refill(MEStorageMenu menu, List<TreeIngredient> orders, List<TreeIngredient> required, Consumer<Screen> finish) {
         original = menu;
-        remaining = new ArrayDeque<>(materials);
+        remaining = new ArrayDeque<>(orders);
+        this.required = required;
+        this.finish = finish;
     }
 
     static boolean busy() { return active != null; }
@@ -64,9 +81,13 @@ public final class Ae2Refill {
     }
 
     static boolean start(AbstractContainerMenu menu, List<TreeIngredient> materials) {
-        if (active != null || materials.isEmpty() || materials.stream().anyMatch(m -> m.amount() <= 0 || m.amount() > Integer.MAX_VALUE))
-            return false;
-        active = new Ae2Refill((MEStorageMenu) menu, materials);
+        return start(menu, materials, List.of(), null);
+    }
+
+    static boolean start(AbstractContainerMenu menu, List<TreeIngredient> orders, List<TreeIngredient> required, Consumer<Screen> finish) {
+        if (active != null || orders.isEmpty() && finish == null
+                || orders.stream().anyMatch(m -> m.amount() <= 0 || m.amount() > Integer.MAX_VALUE)) return false;
+        active = new Ae2Refill((MEStorageMenu) menu, orders, required, finish);
         return true;
     }
 
@@ -97,12 +118,26 @@ public final class Ae2Refill {
         amount.setLongValue(requested);
         active.phase = Phase.AMOUNT;
         active.ticks = 0;
-        screen.getMenu().confirm(requested, false);
+        screen.getMenu().confirm(requested, true);
+    }
+
+    public static void jobStatus(String id, AEKey key, long amount, Status status) {
+        var task = active;
+        if (task == null) return;
+        if (status == Status.STARTED && task.phase == Phase.CONFIRM && !task.started
+                && task.requestedKey.equals(key) && task.requestedAmount == amount) {
+            if (task.finish != null) task.jobId = id;
+            task.started = true;
+        } else if (id.equals(task.jobId)) {
+            if (status == Status.FINISHED) task.jobId = null;
+            else if (status == Status.CANCELLED) stop("AE2 材料订单已取消");
+        }
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void opening(ScreenEvent.Opening event) {
         if (active == null) return;
+        if (active.phase == Phase.FINAL) { CraftExecutor.cancel(); return; }
         if (!(event.getNewScreen() instanceof AbstractContainerScreen<?> screen)) { active = null; return; }
         if (active.phase == Phase.AMOUNT && screen.getMenu() instanceof CraftConfirmMenu) active.phase = Phase.CONFIRM;
         else if (active.phase == Phase.CONFIRM && screen.getMenu() instanceof CraftAmountMenu) active = null;
@@ -113,7 +148,77 @@ public final class Ae2Refill {
         if (event.phase == TickEvent.Phase.END && active != null) active.advance();
     }
 
+    private static boolean locksInput() {
+        return active != null && active.finish != null;
+    }
+
+    private static void cancelAutomatic(Screen screen) {
+        if (active.phase == Phase.FINAL) {
+            CraftExecutor.cancel();
+        } else {
+            stop("已取消自动合成");
+            if (screen instanceof AbstractContainerScreen<?> container && container.getMenu() instanceof CraftConfirmMenu confirm)
+                confirm.goBack();
+        }
+    }
+
+    private static int cancelX(Screen screen) { return screen.width - CANCEL_WIDTH - CANCEL_MARGIN; }
+
+    @SubscribeEvent
+    public static void render(ScreenEvent.Render.Post event) {
+        var screen = event.getScreen();
+        if (!locksInput() || screen instanceof CraftConfirmScreen) return;
+        int x = cancelX(screen);
+        var pose = event.getPoseStack();
+        pose.pushPose();
+        pose.translate(0, 0, 750);
+        CompactUi.button(pose, x, CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT,
+                CompactUi.hit(event.getMouseX(), event.getMouseY(), x, CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT), true);
+        Screen.drawCenteredString(pose, Minecraft.getInstance().font, GuiText.Cancel.text(),
+                x + CANCEL_WIDTH / 2, CANCEL_MARGIN + 5, 0xFFFFFF);
+        pose.popPose();
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
+    public static void mouse(ScreenEvent.MouseButtonPressed.Pre event) {
+        if (!locksInput()) return;
+        event.setCanceled(true);
+        if (event.getButton() != 0) return;
+        var screen = event.getScreen();
+        double x = event.getMouseX(), y = event.getMouseY();
+        if (screen instanceof CraftConfirmScreen confirm) {
+            var cancel = GuiText.Cancel.text();
+            if (confirm.children().stream().anyMatch(child -> child instanceof Button button
+                    && button.active && button.isMouseOver(x, y) && button.getMessage().equals(cancel)))
+                cancelAutomatic(screen);
+        } else if (CompactUi.hit(x, y, cancelX(screen), CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT)) {
+            cancelAutomatic(screen);
+        }
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void key(ScreenEvent.KeyPressed.Pre event) {
+        if (!locksInput()) return;
+        event.setCanceled(true);
+        if (event.getKeyCode() == GLFW.GLFW_KEY_ESCAPE) cancelAutomatic(event.getScreen());
+    }
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void keyReleased(ScreenEvent.KeyReleased.Pre event) { if (locksInput()) event.setCanceled(true); }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void typed(ScreenEvent.CharacterTyped.Pre event) { if (locksInput()) event.setCanceled(true); }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void scroll(ScreenEvent.MouseScrolled.Pre event) { if (locksInput()) event.setCanceled(true); }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void drag(ScreenEvent.MouseDragged.Pre event) { if (locksInput()) event.setCanceled(true); }
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void release(ScreenEvent.MouseButtonReleased.Pre event) { if (locksInput()) event.setCanceled(true); }
+
     private void advance() {
+        if (phase == Phase.FINAL) {
+            if (!CraftExecutor.busy()) active = null;
+            return;
+        }
         var mc = Minecraft.getInstance();
         if (mc.level != level || mc.player == null || !(mc.screen instanceof AbstractContainerScreen<?> screen)
                 || screen.getMenu() != mc.player.containerMenu) { active = null; return; }
@@ -123,8 +228,16 @@ public final class Ae2Refill {
             else if (phase == Phase.OPENING_AMOUNT || phase == Phase.AMOUNT) waitForSync();
             return;
         }
-        if (menu instanceof CraftConfirmMenu && (phase == Phase.AMOUNT || phase == Phase.CONFIRM)) {
+        if (menu instanceof CraftConfirmMenu confirm && (phase == Phase.AMOUNT || phase == Phase.CONFIRM)) {
             phase = Phase.CONFIRM;
+            var plan = confirm.getPlan();
+            var error = confirm.submitError.result();
+            boolean missing = (plan != null && plan.isSimulation())
+                    || (error != null && error.errorCode() == CraftingSubmitErrorCode.MISSING_INGREDIENT);
+            if (missing || error != null) {
+                stop(missing ? "AE2 报告材料不足，当前补料订单已停止" : "AE2 未能提交当前材料订单");
+                if (missing) confirm.goBack();
+            }
             return;
         }
         if (!(menu instanceof MEStorageMenu terminal) || menu.getType() != original.getType()
@@ -137,9 +250,15 @@ public final class Ae2Refill {
             return;
         }
         if (phase == Phase.CONFIRM) {
+            if (!started) { stop("未收到 AE2 材料订单的开始状态"); return; }
             phase = Phase.TERMINAL;
             ticks = 0;
-            if (remaining.isEmpty()) { active = null; return; }
+        }
+        if (jobId != null) return;
+        if (remaining.isEmpty()) {
+            if (finish == null) active = null;
+            else finishWhenStockSynced(screen, terminal);
+            return;
         }
         if (!available(terminal) || terminal.getClientRepo().getAllEntries().isEmpty()) {
             waitForSync(); return;
@@ -154,9 +273,33 @@ public final class Ae2Refill {
         requestedFrom = terminal;
         requestedKey = entry.getWhat();
         requestedAmount = Math.toIntExact(material.amount());
+        started = false;
         phase = Phase.OPENING_AMOUNT;
         ticks = 0;
         terminal.handleInteraction(entry.getSerial(), InventoryAction.AUTO_CRAFT);
+    }
+
+    private void finishWhenStockSynced(Screen screen, MEStorageMenu terminal) {
+        if (ticks++ % 5 != 0) return;
+        if (available(terminal)) {
+            var stock = supplies(terminal, required);
+            if (required.stream().allMatch(m -> stock.getOrDefault(MaterialRequirements.identity(m), Supply.MISSING).stored() >= m.amount())) {
+                active = null;
+                finish.accept(screen);
+                if (CraftExecutor.busy()) {
+                    phase = Phase.FINAL;
+                    active = this;
+                }
+                return;
+            }
+        }
+        if (ticks >= 100) stop("材料订单已结束，但 ME 库存未能满足最终合成");
+    }
+
+    private static void stop(String message) {
+        active = null;
+        var player = Minecraft.getInstance().player;
+        if (player != null) player.displayClientMessage(Component.literal(message), false);
     }
 
     private void waitForSync() {

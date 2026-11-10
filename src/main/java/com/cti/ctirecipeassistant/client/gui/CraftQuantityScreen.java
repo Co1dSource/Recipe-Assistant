@@ -2,6 +2,7 @@ package com.cti.ctirecipeassistant.client.gui;
 
 import com.cti.ctirecipeassistant.client.jei.RecipeInteractions;
 import com.cti.ctirecipeassistant.client.operation.CraftExecutor;
+import com.cti.ctirecipeassistant.client.operation.CraftPlanner;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations.Supply;
 import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
@@ -16,6 +17,9 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 
 import java.util.Map;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
 public final class CraftQuantityScreen extends Screen {
     private static final int ROW = 18;
@@ -43,7 +47,10 @@ public final class CraftQuantityScreen extends Screen {
     }
 
     public static Screen pattern(RecipesGui parent, java.util.List<TreeIngredient> materials) {
-        return new PatternAmountScreen(parent, materials);
+        return pattern(parent, materials, null);
+    }
+    public static Screen pattern(RecipesGui parent, java.util.List<TreeIngredient> materials, BiConsumer<Screen, Long> finish) {
+        return new PatternAmountScreen(parent, materials, finish);
     }
 
     private static final class PatternAmountScreen extends Screen {
@@ -51,17 +58,24 @@ public final class CraftQuantityScreen extends Screen {
         private final RecipeInteractions.JeiContext jei;
         private final AbstractContainerMenu menu;
         private final java.util.List<TreeIngredient> materials;
+        private final Set<Object> initiallyBlue;
+        private final BiConsumer<Screen, Long> finish;
         private final long maximum;
         private String input = "1";
         private EditBox amount;
         private Button confirm;
+        private String error = "";
 
-        PatternAmountScreen(RecipesGui parent, java.util.List<TreeIngredient> materials) {
+        PatternAmountScreen(RecipesGui parent, java.util.List<TreeIngredient> materials, BiConsumer<Screen, Long> finish) {
             super(Component.literal("样板合成份数"));
             this.materials = materials;
+            this.finish = finish;
             jei = RecipeInteractions.captureJei(parent);
             menu = ((AbstractContainerScreen<?>) jei.parent()).getMenu();
-            maximum = Integer.MAX_VALUE / materials.stream().mapToLong(TreeIngredient::amount).max().orElseThrow();
+            initiallyBlue = OptionalIntegrations.refillOrders(materials, OptionalIntegrations.supplies(menu, materials)).stream()
+                    .map(MaterialRequirements::identity).collect(Collectors.toUnmodifiableSet());
+            long limit = Integer.MAX_VALUE / materials.stream().mapToLong(TreeIngredient::amount).max().orElse(1);
+            maximum = finish == null ? limit : Math.min(limit, CraftPlanner.MAX_STEPS);
         }
 
         @Override protected void init() {
@@ -74,7 +88,7 @@ public final class CraftQuantityScreen extends Screen {
             addRenderableWidget(new Button(x + 134, y + 29, 22, 18, Component.literal("+"), button -> adjust(1)));
             confirm = addRenderableWidget(new Button(x + 37, y + 59, 46, 18, Component.literal("确认"), button -> execute()));
             addRenderableWidget(new Button(x + 91, y + 59, 46, 18, Component.literal("取消"), button -> onClose()));
-            amount.setResponder(value -> { input = value; refresh(); });
+            amount.setResponder(value -> { input = value; error = ""; refresh(); });
             setInitialFocus(amount);
             refresh();
         }
@@ -89,8 +103,19 @@ public final class CraftQuantityScreen extends Screen {
         }
         private void execute() {
             refresh();
-            if (confirm.active && OptionalIntegrations.refill(menu, MaterialRequirements.inputsForBatches(materials, batches())))
-                minecraft.setScreen(jei.parent());
+            if (!confirm.active) return;
+            var stock = OptionalIntegrations.supplies(menu, materials);
+            long count = batches();
+            var orders = OptionalIntegrations.refillOrders(materials, stock, count);
+            if (!OptionalIntegrations.sourcesCover(materials, stock) || orders.isEmpty() && finish == null
+                    || orders.stream().anyMatch(order -> !initiallyBlue.contains(MaterialRequirements.identity(order)))) {
+                error = "当前库存或样板状态已变化";
+                return;
+            }
+            boolean started = finish == null ? OptionalIntegrations.refill(menu, orders)
+                    : OptionalIntegrations.refill(menu, orders, MaterialRequirements.inputsForBatches(materials, count),
+                    screen -> finish.accept(screen, count));
+            if (started) minecraft.setScreen(jei.parent());
         }
         @Override public void tick() { amount.tick(); refresh(); }
         @Override public void render(PoseStack pose, int x, int y, float partial) {
@@ -98,6 +123,7 @@ public final class CraftQuantityScreen extends Screen {
             int left = (width - WIDTH) / 2, top = (height - HEIGHT) / 2;
             CompactUi.panel(pose, left, top, WIDTH, HEIGHT);
             font.draw(pose, title, (width - font.width(title)) / 2f, top + 11, 0x303030);
+            font.draw(pose, font.plainSubstrByWidth(error, WIDTH - 16), left + 8, top + 49, 0xA02020);
             super.render(pose, x, y, partial);
         }
         @Override public boolean isPauseScreen() { return false; }
@@ -170,7 +196,8 @@ public final class CraftQuantityScreen extends Screen {
     private void execute() {
         refresh();
         if (!confirm.active) return;
-        boolean started = refill ? OptionalIntegrations.refill(menu, requirements.materials()) : craft.start(quantity);
+        boolean started = refill ? OptionalIntegrations.refill(menu, OptionalIntegrations.refillOrders(requirements.materials(), stock, 1))
+                : craft.start(quantity);
         if (started) minecraft.setScreen(jei.parent());
     }
 

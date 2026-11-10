@@ -4,12 +4,16 @@ import com.cti.ctirecipeassistant.CtiRecipeAssistant;
 import com.cti.ctirecipeassistant.client.gui.CraftQuantityScreen;
 import com.cti.ctirecipeassistant.client.gui.RecipeTreeScreen;
 import com.cti.ctirecipeassistant.client.operation.CraftExecutor;
+import com.cti.ctirecipeassistant.client.operation.CraftingInventory;
 import com.cti.ctirecipeassistant.client.operation.ClientRecipeOperation;
 import com.cti.ctirecipeassistant.client.operation.RecipeOperationDispatcher;
 import com.cti.ctirecipeassistant.integration.OptionalIntegrations;
+import com.cti.ctirecipeassistant.integration.OptionalIntegrations.Supply;
 import com.cti.ctirecipeassistant.mixin.RecipesGuiAccessor;
 import com.cti.ctirecipeassistant.recipe.JeiRecipeIndex;
 import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
+import com.cti.ctirecipeassistant.recipe.RecipeCandidate;
+import com.cti.ctirecipeassistant.recipe.RecipeNode;
 import com.cti.ctirecipeassistant.recipe.RecipePreferences;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -26,6 +30,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.ScreenEvent;
 import net.minecraftforge.event.TickEvent;
@@ -34,6 +39,7 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
 import java.util.List;
@@ -43,6 +49,7 @@ public final class RecipeActionButtons {
     private static final int SIZE = 13;
     // AE2 12.9.9's JEI transfer ErrorRenderer uses this ARGB with IRecipeSlotView.drawHighlight.
     private static final int AE2_JEI_INPUT_BLUE = 0x400000FF;
+    private static final int JEI_INPUT_RED = 0x66FF0000;
     private static final int AE2_JEI_BUTTON_BLUE = 0x804545FF;
     private static final IDrawable GRID = new IDrawable() {
         @Override public int getWidth() { return 7; }
@@ -62,16 +69,18 @@ public final class RecipeActionButtons {
         final long revision = RecipePreferences.revision();
         final RecipeTreeScreen tree;
         final CraftExecutor.Session craft;
-        final List<TreeIngredient> inputs;
+        List<TreeIngredient> inputs = List.of();
+        List<TreeIngredient> slots = List.of();
+        Map<Object, Supply> stock;
         private long checkedTick = -1;
         private long sourceTick = -1;
         private boolean covered;
+        private int orders;
         private String problem;
 
-        CraftPreview(Object target, RecipeTreeScreen tree, Screen parent, List<TreeIngredient> inputs) {
+        CraftPreview(Object target, RecipeTreeScreen tree, Screen parent) {
             this.target = target;
             this.tree = tree;
-            this.inputs = inputs;
             craft = new CraftExecutor.Session(parent, tree.finalRoot(), tree.index());
         }
 
@@ -83,14 +92,25 @@ public final class RecipeActionButtons {
             return problem;
         }
 
-        boolean sourcesCover(Screen parent) {
-            if (CraftExecutor.busy() || !(parent instanceof AbstractContainerScreen<?> screen)
-                    || !OptionalIntegrations.refillAvailable(screen.getMenu())) return false;
-            if (sourceTick != tick) {
-                covered = OptionalIntegrations.sourcesCover(inputs, OptionalIntegrations.supplies(screen.getMenu(), inputs));
-                sourceTick = tick;
+        void readSources(IRecipeLayoutDrawable<?> layout, Screen parent) {
+            if (sourceTick == tick) return;
+            sourceTick = tick;
+            if (!(parent instanceof AbstractContainerScreen<?> screen) || !OptionalIntegrations.refillAvailable(screen.getMenu())) {
+                stock = null; covered = false; orders = 0;
+                return;
             }
-            return covered;
+            var manager = TreeJeiPlugin.runtime.getIngredientManager();
+            slots = layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.INPUT).stream()
+                    .map(slot -> slot.getDisplayedIngredient().map(value -> TreeIngredient.ofInput(value, manager)).orElse(null))
+                    .toList();
+            inputs = MaterialRequirements.inputsForBatches(slots.stream().filter(java.util.Objects::nonNull).toList(), 1);
+            stock = OptionalIntegrations.supplies(screen.getMenu(), inputs);
+            covered = OptionalIntegrations.sourcesCover(inputs, stock);
+            orders = OptionalIntegrations.refillOrders(inputs, stock).size();
+        }
+
+        boolean canRefill() {
+            return orders > 0 && !CraftExecutor.busy();
         }
     }
     private RecipeActionButtons() {}
@@ -152,8 +172,11 @@ public final class RecipeActionButtons {
             CraftPreview craft = state.enabled() && normalCraft(mode) ? craftPreview(layout, mode, parent) : null;
             String problem = craft == null ? null : craft.problem();
             boolean onButton = isMouseOver(buttonArea(layout), event.getMouseX(), event.getMouseY());
-            boolean refill = craft != null && craft.sourcesCover(parent);
-            boolean enabled = state.enabled() && (control && craft != null && onButton ? refill : problem == null || refill);
+            if (craft != null) craft.readSources(layout, parent);
+            boolean covered = craft != null && craft.covered;
+            boolean refill = craft != null && craft.canRefill();
+            boolean auto = covered && !CraftExecutor.busy();
+            boolean enabled = state.enabled() && (control && craft != null && onButton ? auto : problem == null || covered);
             button(layout, enabled).render(pose, event.getMouseX(), event.getMouseY(), event.getPartialTick());
             if (refill) {
                 var area = buttonArea(layout);
@@ -161,14 +184,14 @@ public final class RecipeActionButtons {
                         area.getY() + area.getHeight(), AE2_JEI_BUTTON_BLUE);
             }
             if (onButton) {
-                if (normalCraft(mode)) drawInputHighlights(pose, layout);
+                if (craft != null) drawInputHighlights(pose, layout, parent, craft);
                 tooltip = new ArrayList<>(operationTooltip(mode, RecipeInteractions.choosing(), refill));
+                if (auto) tooltip.add(Component.literal("Ctrl+右键：补料后合成当前配方").withStyle(ChatFormatting.BLUE));
                 if (craft != null && !craft.tree.finalRoot().hasConfiguredProduction())
                     tooltip.add(Component.literal("当前物品未配置配方树").withStyle(ChatFormatting.RED));
-                if (control && craft != null && parent instanceof AbstractContainerScreen<?> screen
-                        && OptionalIntegrations.refillAvailable(screen.getMenu())) {
-                    if (!refill) tooltip.add(craftProblemTooltip("缺少材料：", true));
-                } else if (problem != null) tooltip.add(refill
+                if (control && craft != null && craft.stock != null) {
+                    if (!covered) tooltip.add(craftProblemTooltip("缺少材料：", true));
+                } else if (problem != null) tooltip.add(covered
                         ? Component.literal(problem).withStyle(ChatFormatting.RED)
                         : craftProblemTooltip(problem, parent instanceof AbstractContainerScreen<?> screen
                         && OptionalIntegrations.crafting(screen.getMenu())));
@@ -197,25 +220,40 @@ public final class RecipeActionButtons {
             return previous;
         var operation = operation(layout, mode, parent);
         var tree = RecipeInteractions.actionTree(operation, layout);
-        var root = tree.finalRoot();
-        var candidate = operation.candidate();
-        boolean selected = root.selected != null && root.selected.id().equals(candidate.id());
-        var inputs = new ArrayList<TreeIngredient>();
-        for (int i = 0; i < candidate.inputs().size(); i++) {
-            var slot = candidate.inputs().get(i);
-            if (!slot.isEmpty()) inputs.add(selected ? root.selectedInput(i) : slot.get(0));
-        }
-        var current = new CraftPreview(target, tree, parent, MaterialRequirements.inputsForBatches(inputs, 1));
+        var current = new CraftPreview(target, tree, parent);
         previews.put(layout, current);
         return current;
     }
 
-    private static void drawInputHighlights(PoseStack pose, IRecipeLayoutDrawable<?> layout) {
+    private static int[] inputColors(List<TreeIngredient> slots, Map<Object, Supply> stock) {
+        var remaining = new HashMap<Object, Long>();
+        int[] colors = new int[slots.size()];
+        for (int i = 0; i < slots.size(); i++) {
+            var ingredient = slots.get(i);
+            if (ingredient == null) continue;
+            var identity = MaterialRequirements.identity(ingredient);
+            var supply = stock.getOrDefault(identity, Supply.MISSING);
+            long available = remaining.getOrDefault(identity, supply.stored());
+            remaining.put(identity, Math.max(0, available - ingredient.amount()));
+            // JEI draws whole slots. Standard 3×3 recipes use one item per slot.
+            if (available == 0) colors[i] = supply.craftable() ? AE2_JEI_INPUT_BLUE : JEI_INPUT_RED;
+        }
+        return colors;
+    }
+
+    private static void drawInputHighlights(PoseStack pose, IRecipeLayoutDrawable<?> layout, Screen parent, CraftPreview craft) {
+        var slots = layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.INPUT);
         var area = layout.getRect();
         pose.pushPose();
         pose.translate(area.getX(), area.getY(), 0);
-        for (var slot : layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.INPUT))
-            if (slot.getDisplayedIngredient().isPresent()) slot.drawHighlight(pose, AE2_JEI_INPUT_BLUE);
+        if (craft.stock != null) {
+            var colors = inputColors(craft.slots, craft.stock);
+            for (int i = 0; i < colors.length; i++) if (colors[i] != 0) slots.get(i).drawHighlight(pose, colors[i]);
+        } else if (parent instanceof AbstractContainerScreen<?> screen && !OptionalIntegrations.crafting(screen.getMenu())
+                && CraftingInventory.supports(screen.getMenu())) {
+            var inventory = CraftingInventory.of(screen.getMenu(), (CraftingRecipe) layout.getRecipe());
+            for (var slot : inventory.missingInputs(slots, Minecraft.getInstance().player)) slot.drawHighlight(pose, JEI_INPUT_RED);
+        }
         pose.popPose();
     }
 
@@ -246,7 +284,8 @@ public final class RecipeActionButtons {
                 return;
             }
             boolean right = event.getButton() == 1;
-            boolean refill = !right && Screen.hasControlDown();
+            boolean control = Screen.hasControlDown();
+            boolean refill = !right && control;
             if (mode == ClientRecipeOperation.Mode.BATCH_PATTERN_ENCODING) {
                 if (!right && !refill) {
                     button(layout, true).playDownSound(Minecraft.getInstance().getSoundManager());
@@ -255,7 +294,15 @@ public final class RecipeActionButtons {
                 return;
             }
             var craft = craftPreview(layout, mode, parent);
-            if (refill && !craft.sourcesCover(parent)
+            if (control) craft.readSources(layout, parent);
+            if (right && control && craft.stock != null) {
+                if (craft.covered && !CraftExecutor.busy()) {
+                    button(layout, true).playDownSound(Minecraft.getInstance().getSoundManager());
+                    openAutomaticCraft(gui, layout, craft);
+                }
+                return;
+            }
+            if (refill && !craft.canRefill()
                     || !right && !refill && craft.craft.oneCraftProblem() != null) return;
             var root = craft.tree.finalRoot();
             if (root.selected != null && !root.hasConfiguredProduction()) {
@@ -268,6 +315,27 @@ public final class RecipeActionButtons {
                     : new CraftQuantityScreen(gui, craft.tree, false));
             return;
         }
+    }
+
+    private static void openAutomaticCraft(RecipesGui gui, IRecipeLayoutDrawable<?> layout, CraftPreview craft) {
+        var target = RecipeInteractions.target(layout).orElseThrow();
+        var index = new JeiRecipeIndex(TreeJeiPlugin.runtime, true);
+        var recipe = index.readLayout(layout, target);
+        var slots = craft.slots.stream().map(input -> input == null ? List.<TreeIngredient>of() : List.of(input)).toList();
+        var root = new RecipeNode(target, null, index, craft.tree.preferences());
+        root.useRecipe(new RecipeCandidate(recipe.id(), recipe.category(), recipe.machine(), slots, recipe.outputs(), recipe.catalysts()));
+        for (var child : root.children) {
+            child.loaded = true;
+            child.externalSupply = true;
+        }
+        Minecraft.getInstance().setScreen(CraftQuantityScreen.pattern(gui, craft.inputs, (screen, batches) -> {
+            var session = new CraftExecutor.Session(screen, root, index);
+            if (!session.start(MaterialRequirements.rootOutput(root) * batches)) {
+                String problem = session.problem();
+                Minecraft.getInstance().player.displayClientMessage(Component.literal(
+                        problem == null ? "当前终端无法完成所选份数" : problem), false);
+            }
+        }));
     }
 
     private static <R> ClientRecipeOperation<R> operation(IRecipeLayoutDrawable<R> layout, ClientRecipeOperation.Mode mode,

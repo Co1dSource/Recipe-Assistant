@@ -5,11 +5,13 @@ import com.cti.ctirecipeassistant.recipe.RecipeNode;
 import com.cti.ctirecipeassistant.recipe.MaterialRequirements;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.client.gui.screens.Screen;
 import mezz.jei.api.recipe.transfer.IRecipeTransferHandler;
 import net.minecraftforge.fml.ModList;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.function.Consumer;
 
 /** Only this guarded initializer names the optional implementation. */
 public final class OptionalIntegrations {
@@ -31,6 +33,7 @@ public final class OptionalIntegrations {
         boolean refillAvailable(AbstractContainerMenu menu);
         Map<Object, Supply> supplies(AbstractContainerMenu menu, List<TreeIngredient> materials);
         boolean refill(AbstractContainerMenu menu, List<TreeIngredient> materials);
+        boolean refill(AbstractContainerMenu menu, List<TreeIngredient> orders, List<TreeIngredient> required, Consumer<Screen> finish);
     }
     private static Ae2 ae2;
     private OptionalIntegrations() {}
@@ -68,7 +71,18 @@ public final class OptionalIntegrations {
         }
         return orders;
     }
+    public static List<TreeIngredient> refillOrders(List<TreeIngredient> materials, Map<Object, Supply> stock, long batches) {
+        return refillOrders(materials, stock).stream().map(material -> {
+            long stored = stock.getOrDefault(MaterialRequirements.identity(material), Supply.MISSING).stored();
+            long amount = Math.subtractExact(Math.multiplyExact(material.amount(), batches), stored);
+            return new TreeIngredient(material.typed(), material.key(), material.name(), amount, material.unit());
+        }).toList();
+    }
     public static boolean refill(AbstractContainerMenu menu, List<TreeIngredient> materials) {
         return refillAvailable(menu) && ae2.refill(menu, materials);
+    }
+    public static boolean refill(AbstractContainerMenu menu, List<TreeIngredient> orders,
+                                 List<TreeIngredient> required, Consumer<Screen> finish) {
+        return refillAvailable(menu) && ae2.refill(menu, orders, required, finish);
     }
 }

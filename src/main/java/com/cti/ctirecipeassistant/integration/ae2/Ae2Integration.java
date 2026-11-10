@@ -14,9 +14,11 @@ import com.cti.ctirecipeassistant.client.operation.*;
 import com.cti.ctirecipeassistant.recipe.RecipeNode;
 import mezz.jei.api.recipe.transfer.IRecipeTransferHandler;
 import com.cti.ctirecipeassistant.recipe.TreeIngredient;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraftforge.common.MinecraftForge;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 public final class Ae2Integration implements OptionalIntegrations.Ae2 {
@@ -61,6 +63,9 @@ public final class Ae2Integration implements OptionalIntegrations.Ae2 {
         return Ae2Refill.supplies(menu, materials);
     }
     public boolean refill(AbstractContainerMenu menu, List<TreeIngredient> materials) { return Ae2Refill.start(menu, materials); }
+    public boolean refill(AbstractContainerMenu menu, List<TreeIngredient> orders, List<TreeIngredient> required, Consumer<Screen> finish) {
+        return Ae2Refill.start(menu, orders, required, finish);
+    }
     public boolean supportedHandler(IRecipeTransferHandler<?, ?> handler) { return handler instanceof UseCraftingRecipeTransfer<?>; }
     public Object recipe(RecipeNode node) { return AeCraftingSelection.template(node); }
     public void takeResult(int slot) {
