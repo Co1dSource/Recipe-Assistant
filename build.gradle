@@ -5,7 +5,7 @@ plugins {
 }
 
 version = mod_version
-group = 'com.cti.ctirecipeassistant'
+group = 'com.cti.recipeassistant'
 base { archivesName = 'recipeassistant' }
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
@@ -18,7 +18,7 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.console.level', 'info'
             mods {
-                ctirecipeassistant { source sourceSets.main }
+                "${mod_id}" { source sourceSets.main }
             }
         }
     }
@@ -49,8 +49,9 @@ dependencies {
 
 tasks.named('processResources', ProcessResources).configure {
     inputs.property 'mod_version', mod_version
+    inputs.property 'mod_id', mod_id
     filesMatching('META-INF/mods.toml') {
-        expand mod_version: mod_version
+        expand mod_version: mod_version, mod_id: mod_id
     }
 }
 
@@ -64,7 +65,7 @@ tasks.named('jar', Jar).configure {
     manifest {
         attributes 'Implementation-Title': 'Recipe Assistant',
                 'Implementation-Version': mod_version,
-                'MixinConfigs': 'ctirecipeassistant.mixins.json,ctirecipeassistant.ae2.mixins.json'
+                'MixinConfigs': "${mod_id}.mixins.json,${mod_id}.ae2.mixins.json"
     }
     finalizedBy 'reobfJar'
 }

@@ -1,0 +1,6 @@
+{
+  "key.categories.recipeassistant": "Recipe Assistant",
+  "key.recipeassistant.open_recipe_tree": "打开配方树",
+  "message.recipeassistant.jei_unavailable": "JEI 尚未就绪",
+  "message.recipeassistant.invalid_target": "JEI 无法识别该物品"
+}

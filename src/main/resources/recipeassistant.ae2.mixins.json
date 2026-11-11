@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "plugin": "com.cti.recipeassistant.mixin.OptionalMixinPlugin",
+  "package": "com.cti.recipeassistant.integration.ae2.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "CraftAmountScreenMixin",
+    "PendingCraftingJobsMixin",
+    "PatternAccessTermAccessor",
+    "PatternAccessUpdatesMixin"
+  ]
+}

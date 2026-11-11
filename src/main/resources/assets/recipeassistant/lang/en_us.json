@@ -1,0 +1,6 @@
+{
+  "key.categories.recipeassistant": "Recipe Assistant",
+  "key.recipeassistant.open_recipe_tree": "Open recipe tree",
+  "message.recipeassistant.jei_unavailable": "JEI is not ready",
+  "message.recipeassistant.invalid_target": "JEI cannot identify this item"
+}
