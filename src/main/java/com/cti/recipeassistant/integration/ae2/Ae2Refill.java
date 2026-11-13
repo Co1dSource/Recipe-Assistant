@@ -51,7 +51,7 @@ public final class Ae2Refill {
     private final Deque<TreeIngredient> remaining;
     private final List<TreeIngredient> required;
     private final Consumer<Screen> finish;
-    private String jobId;
+    private UUID jobId;
     private boolean started;
     private Phase phase = Phase.TERMINAL;
     private MEStorageMenu requestedFrom;
@@ -120,10 +120,11 @@ public final class Ae2Refill {
         amount.setLongValue(requested);
         active.phase = Phase.AMOUNT;
         active.ticks = 0;
-        screen.getMenu().confirm(requested, true);
+        // The order amount already excludes available ME stock.
+        screen.getMenu().confirm(requested, false, true);
     }
 
-    public static void jobStatus(String id, AEKey key, long amount, Status status) {
+    public static void jobStatus(UUID id, AEKey key, long amount, Status status) {
         var task = active;
         if (task == null) return;
         if (status == Status.STARTED && task.phase == Phase.CONFIRM && !task.started
@@ -177,14 +178,14 @@ public final class Ae2Refill {
         var screen = event.getScreen();
         if (!locksInput() || screen instanceof CraftConfirmScreen) return;
         int x = cancelX(screen);
-        var pose = event.getPoseStack();
-        pose.pushPose();
-        pose.translate(0, 0, 750);
-        CompactUi.button(pose, x, CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT,
+        var graphics = event.getGuiGraphics();
+        graphics.pose().pushPose();
+        graphics.pose().translate(0, 0, 750);
+        CompactUi.button(graphics, x, CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT,
                 CompactUi.hit(event.getMouseX(), event.getMouseY(), x, CANCEL_MARGIN, CANCEL_WIDTH, CANCEL_HEIGHT), true);
-        Screen.drawCenteredString(pose, Minecraft.getInstance().font, GuiText.Cancel.text(),
+        graphics.drawCenteredString(Minecraft.getInstance().font, GuiText.Cancel.text(),
                 x + CANCEL_WIDTH / 2, CANCEL_MARGIN + 5, 0xFFFFFF);
-        pose.popPose();
+        graphics.pose().popPose();
     }
 
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)

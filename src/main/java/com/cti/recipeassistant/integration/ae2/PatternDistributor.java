@@ -175,16 +175,16 @@ public final class PatternDistributor {
     @SubscribeEvent
     public static void render(ScreenEvent.Render.Post event) {
         if(!busy() || state==State.SELECTING)return;
-        var pose=event.getPoseStack();var mc=Minecraft.getInstance();var screen=event.getScreen();
-        pose.pushPose();pose.translate(0,0,750);
-        Screen.fill(pose,screen.width-55,0,screen.width,20,0xEF303030);
-        Screen.drawString(pose,mc.font,cancel?"正在取消":"取消",screen.width-50,6,0xE5B989);
+        var graphics=event.getGuiGraphics();var mc=Minecraft.getInstance();var screen=event.getScreen();
+        graphics.pose().pushPose();graphics.pose().translate(0,0,750);
+        graphics.fill(screen.width-55,0,screen.width,20,0xEF303030);
+        graphics.drawString(mc.font,cancel?"正在取消":"取消",screen.width-50,6,0xE5B989);
         if(state==State.PAUSED){
-            Screen.fill(pose,0,20,screen.width,40,0xEF303030);
-            Screen.drawString(pose,mc.font,mc.font.plainSubstrByWidth(message,Math.max(1,screen.width-65)),5,25,0xB9C0CB);
-            Screen.drawString(pose,mc.font,"继续",screen.width-45,25,0xE5B989);
+            graphics.fill(0,20,screen.width,40,0xEF303030);
+            graphics.drawString(mc.font,mc.font.plainSubstrByWidth(message,Math.max(1,screen.width-65)),5,25,0xB9C0CB);
+            graphics.drawString(mc.font,"继续",screen.width-45,25,0xE5B989);
         }
-        pose.popPose();
+        graphics.pose().popPose();
     }
     @SubscribeEvent(priority=EventPriority.HIGHEST)
     public static void mouse(ScreenEvent.MouseButtonPressed.Pre event) {

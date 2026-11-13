@@ -1,11 +1,12 @@
 package com.cti.recipeassistant.integration.ae2;
 
-import com.cti.recipeassistant.client.operation.*;
+import com.cti.recipeassistant.client.jei.TreeJeiPlugin;
 import com.cti.recipeassistant.recipe.*;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.api.gui.ingredient.*;
 import mezz.jei.api.ingredients.*;
 import mezz.jei.api.recipe.RecipeIngredientRole;
+import net.minecraft.tags.TagKey;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.fluids.FluidStack;
 import java.util.*;
@@ -43,23 +44,21 @@ public final class PatternEncodingSlots implements IRecipeSlotsView {
     @SuppressWarnings("unchecked")
     private static <T> ITypedIngredient<T> typed(TreeIngredient source, Object value) {
         IIngredientType<T> type = (IIngredientType<T>) source.typed().getType();
-        return new ITypedIngredient<>() {
-            public IIngredientType<T> getType() { return type; }
-            public T getIngredient() { return type.getIngredientClass().cast(value); }
-        };
+        return TreeJeiPlugin.runtime.getIngredientManager()
+                .createTypedIngredient(type, type.getIngredientClass().cast(value)).orElseThrow();
     }
     public List<IRecipeSlotView> getSlotViews() { return slots; }
     public List<IRecipeSlotView> getSlotViews(RecipeIngredientRole role) { return slots.stream().filter(s -> s.getRole() == role).toList(); }
     public Optional<IRecipeSlotView> findSlotByName(String name) { return slots.stream().filter(s -> s.getSlotName().filter(name::equals).isPresent()).findFirst(); }
 
     private record Slot(IRecipeSlotView original, ITypedIngredient<?> value) implements IRecipeSlotView {
-        public <T> Stream<T> getIngredients(IIngredientType<T> type) { return type.equals(value.getType()) ? Stream.of(type.getIngredientClass().cast(value.getIngredient())) : Stream.empty(); }
         public Stream<ITypedIngredient<?>> getAllIngredients() { return Stream.of(value); }
-        public boolean isEmpty() { return false; }
-        public <T> Optional<T> getDisplayedIngredient(IIngredientType<T> type) { return getIngredients(type).findFirst(); }
+        public List<ITypedIngredient<?>> getAllIngredientsList() { return List.of(value); }
+        public Stream<ITypedIngredient<?>> getDisplayedIngredients() { return getAllIngredients(); }
         public Optional<ITypedIngredient<?>> getDisplayedIngredient() { return Optional.of(value); }
         public Optional<String> getSlotName() { return original.getSlotName(); }
+        public Optional<TagKey<?>> getTagKey() { return Optional.empty(); }
         public RecipeIngredientRole getRole() { return original.getRole(); }
-        public void drawHighlight(PoseStack pose, int color) { original.drawHighlight(pose, color); }
+        public void drawHighlight(GuiGraphics graphics, int color) { original.drawHighlight(graphics, color); }
     }
 }

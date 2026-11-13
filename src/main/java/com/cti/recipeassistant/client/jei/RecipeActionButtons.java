@@ -16,12 +16,12 @@ import com.cti.recipeassistant.recipe.RecipeCandidate;
 import com.cti.recipeassistant.recipe.RecipeNode;
 import com.cti.recipeassistant.recipe.RecipePreferences;
 import com.cti.recipeassistant.recipe.TreeIngredient;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.drawable.IDrawable;
 import mezz.jei.api.recipe.RecipeIngredientRole;
 import mezz.jei.common.Internal;
-import mezz.jei.gui.elements.GuiIconButtonSmall;
+import mezz.jei.gui.elements.GuiIconButton;
 import mezz.jei.gui.recipes.RecipesGui;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.ChatFormatting;
@@ -47,18 +47,18 @@ import java.util.List;
 @Mod.EventBusSubscriber(modid = RecipeAssistant.MOD_ID, value = Dist.CLIENT)
 public final class RecipeActionButtons {
     private static final int SIZE = 13;
-    // AE2 12.9.9's JEI transfer ErrorRenderer uses this ARGB with IRecipeSlotView.drawHighlight.
+    // Match the native AE2 transfer highlight for craftable ingredients.
     private static final int AE2_JEI_INPUT_BLUE = 0x400000FF;
     private static final int JEI_INPUT_RED = 0x66FF0000;
     private static final int AE2_JEI_BUTTON_BLUE = 0x804545FF;
     private static final IDrawable GRID = new IDrawable() {
         @Override public int getWidth() { return 7; }
         @Override public int getHeight() { return 7; }
-        @Override public void draw(PoseStack pose, int x, int y) {
+        @Override public void draw(GuiGraphics graphics, int x, int y) {
             RenderSystem.setShaderColor(1, 1, 1, 1);
             for (int row = 0; row < 3; row++) for (int col = 0; col < 3; col++) {
                 int px = x + col * 3, py = y + row * 3;
-                Screen.fill(pose, px, py, px + 1, py + 1, 0xFFFFFFFF);
+                graphics.fill(px, py, px + 1, py + 1, 0xFFFFFFFF);
             }
         }
     };
@@ -117,13 +117,17 @@ public final class RecipeActionButtons {
 
     public static Rect2i buttonArea(IRecipeLayoutDrawable<?> layout) {
         var rect = layout.getRect();
-        var original = layout.getRecipeTransferButtonArea();
-        int x = original.getX();
-        int y = rect.getY();
-        if (x < original.getX() + original.getWidth() && x + SIZE > original.getX()
-                && y < original.getY() + original.getHeight() && y + SIZE > original.getY())
-            y = original.getY() - SIZE - 1;
-        return new Rect2i(x, y, SIZE, SIZE);
+        var transfer = layout.getRecipeTransferButtonArea();
+        var bookmark = layout.getRecipeBookmarkButtonArea();
+        // JEI 15 gives side button positions relative to each recipe.
+        int x = transfer.getX();
+        boolean overlapsTransfer = transfer.getY() < SIZE && transfer.getY() + transfer.getHeight() > 0;
+        boolean overlapsBookmark = x < bookmark.getX() + bookmark.getWidth() && x + SIZE > bookmark.getX()
+                && bookmark.getY() < SIZE && bookmark.getY() + bookmark.getHeight() > 0;
+        if (overlapsTransfer || overlapsBookmark) {
+            x = Math.max(x + transfer.getWidth(), bookmark.getX() + bookmark.getWidth()) + 2;
+        }
+        return new Rect2i(rect.getX() + x, rect.getY(), SIZE, SIZE);
     }
 
     public static boolean isMouseOver(Rect2i area, double x, double y) {
@@ -132,11 +136,11 @@ public final class RecipeActionButtons {
                 && y >= area.getY() && y < area.getY() + area.getHeight();
     }
 
-    private static GuiIconButtonSmall button(IRecipeLayoutDrawable<?> layout, boolean enabled) {
+    private static GuiIconButton button(IRecipeLayoutDrawable<?> layout, boolean enabled) {
         var area = buttonArea(layout);
         var textures = Internal.getTextures();
-        var button = new GuiIconButtonSmall(area.getX(), area.getY(), SIZE, SIZE,
-                RecipeInteractions.choosing() ? textures.getRecipeTransfer() : GRID, ignored -> {}, textures);
+        var button = new GuiIconButton(area.getX(), area.getY(), SIZE, SIZE,
+                RecipeInteractions.choosing() ? textures.getRecipeTransfer() : GRID, ignored -> {});
         button.active = enabled;
         return button;
     }
@@ -156,15 +160,14 @@ public final class RecipeActionButtons {
     @SubscribeEvent
     public static void render(ScreenEvent.Render.Post event) {
         if (!(event.getScreen() instanceof RecipesGui gui) || TreeJeiPlugin.runtime == null) return;
-        var access = (RecipesGuiAccessor) gui;
-        var layouts = access.cti$getRecipeLayouts();
+        var layouts = RecipeInteractions.visibleLayouts(gui);
         previews.keySet().retainAll(layouts);
-        var parent = access.cti$getParentScreen();
-        var pose = event.getPoseStack();
+        var parent = ((RecipesGuiAccessor) gui).cti$getParentScreen();
+        var graphics = event.getGuiGraphics();
         List<Component> tooltip = List.of();
         boolean control = Screen.hasControlDown();
-        pose.pushPose();
-        pose.translate(0, 0, 400);
+        graphics.pose().pushPose();
+        graphics.pose().translate(0, 0, 400);
         for (var layout : layouts) {
             var mode = RecipeInteractions.mode(parent, layout);
             if (mode == ClientRecipeOperation.Mode.HIDDEN) continue;
@@ -177,14 +180,14 @@ public final class RecipeActionButtons {
             boolean refill = craft != null && craft.canRefill();
             boolean auto = covered && !CraftExecutor.busy();
             boolean enabled = state.enabled() && (control && craft != null && onButton ? auto : problem == null || covered);
-            button(layout, enabled).render(pose, event.getMouseX(), event.getMouseY(), event.getPartialTick());
+            button(layout, enabled).render(graphics, event.getMouseX(), event.getMouseY(), event.getPartialTick());
             if (refill) {
                 var area = buttonArea(layout);
-                Screen.fill(pose, area.getX(), area.getY(), area.getX() + area.getWidth(),
+                graphics.fill(area.getX(), area.getY(), area.getX() + area.getWidth(),
                         area.getY() + area.getHeight(), AE2_JEI_BUTTON_BLUE);
             }
             if (onButton) {
-                if (craft != null) drawInputHighlights(pose, layout, parent, craft);
+                if (craft != null) drawInputHighlights(graphics, layout, parent, craft);
                 tooltip = new ArrayList<>(operationTooltip(mode, RecipeInteractions.choosing(), refill));
                 if (auto) tooltip.add(Component.literal("Ctrl+右键：补料后合成当前配方").withStyle(ChatFormatting.BLUE));
                 if (craft != null && !craft.tree.finalRoot().hasConfiguredProduction())
@@ -198,8 +201,8 @@ public final class RecipeActionButtons {
                 else if (state.reason() != null) tooltip.add(state.reason());
             }
         }
-        pose.popPose();
-        if (!tooltip.isEmpty()) gui.renderComponentTooltip(pose, tooltip, event.getMouseX(), event.getMouseY());
+        graphics.pose().popPose();
+        if (!tooltip.isEmpty()) graphics.renderComponentTooltip(Minecraft.getInstance().font, tooltip, event.getMouseX(), event.getMouseY());
     }
 
     private static Component craftProblemTooltip(String problem, boolean ae2Crafting) {
@@ -241,20 +244,20 @@ public final class RecipeActionButtons {
         return colors;
     }
 
-    private static void drawInputHighlights(PoseStack pose, IRecipeLayoutDrawable<?> layout, Screen parent, CraftPreview craft) {
+    private static void drawInputHighlights(GuiGraphics graphics, IRecipeLayoutDrawable<?> layout, Screen parent, CraftPreview craft) {
         var slots = layout.getRecipeSlotsView().getSlotViews(RecipeIngredientRole.INPUT);
         var area = layout.getRect();
-        pose.pushPose();
-        pose.translate(area.getX(), area.getY(), 0);
+        graphics.pose().pushPose();
+        graphics.pose().translate(area.getX(), area.getY(), 0);
         if (craft.stock != null) {
             var colors = inputColors(craft.slots, craft.stock);
-            for (int i = 0; i < colors.length; i++) if (colors[i] != 0) slots.get(i).drawHighlight(pose, colors[i]);
+            for (int i = 0; i < colors.length; i++) if (colors[i] != 0) slots.get(i).drawHighlight(graphics, colors[i]);
         } else if (parent instanceof AbstractContainerScreen<?> screen && !OptionalIntegrations.crafting(screen.getMenu())
                 && CraftingInventory.supports(screen.getMenu())) {
             var inventory = CraftingInventory.of(screen.getMenu(), (CraftingRecipe) layout.getRecipe());
-            for (var slot : inventory.missingInputs(slots, Minecraft.getInstance().player)) slot.drawHighlight(pose, JEI_INPUT_RED);
+            for (var slot : inventory.missingInputs(slots, Minecraft.getInstance().player)) slot.drawHighlight(graphics, JEI_INPUT_RED);
         }
-        pose.popPose();
+        graphics.pose().popPose();
     }
 
     static List<Component> operationTooltip(ClientRecipeOperation.Mode mode, boolean choosing, boolean canRefill) {
@@ -272,9 +275,8 @@ public final class RecipeActionButtons {
     public static void click(ScreenEvent.MouseButtonPressed.Pre event) {
         if ((event.getButton() != 0 && event.getButton() != 1) || !(event.getScreen() instanceof RecipesGui gui)
                 || TreeJeiPlugin.runtime == null) return;
-        var access = (RecipesGuiAccessor) gui;
-        var parent = access.cti$getParentScreen();
-        for (var layout : access.cti$getRecipeLayouts()) {
+        var parent = ((RecipesGuiAccessor) gui).cti$getParentScreen();
+        for (var layout : RecipeInteractions.visibleLayouts(gui)) {
             var mode = RecipeInteractions.mode(parent, layout);
             if (mode == ClientRecipeOperation.Mode.HIDDEN || !isMouseOver(buttonArea(layout), event.getMouseX(), event.getMouseY())) continue;
             event.setCanceled(true);

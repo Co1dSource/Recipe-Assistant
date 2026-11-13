@@ -6,6 +6,7 @@ import com.cti.recipeassistant.recipe.RecipeNode;
 import net.minecraft.core.NonNullList;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.CraftingBookCategory;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraftforge.common.crafting.StrictNBTIngredient;
@@ -19,6 +20,6 @@ final class AeCraftingSelection {
         var output = ((ItemStack) node.selected.output(node.target.key()).typed().getIngredient()).copy();
         // AE2's own CraftingHelper detects this absent id and uses its existing template-item packet path.
         return new ShapedRecipe(new ResourceLocation(RecipeAssistant.MOD_ID, "selection/" + node.selected.id()),
-                "", 3, 3, inputs, output);
+                "", CraftingBookCategory.MISC, 3, 3, inputs, output);
     }
 }

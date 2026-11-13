@@ -4,7 +4,7 @@ import com.cti.recipeassistant.recipe.*;
 import com.cti.recipeassistant.client.jei.RecipeInteractions;
 import mezz.jei.gui.recipes.RecipesGui;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.api.runtime.IJeiRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
@@ -188,18 +188,15 @@ public final class RecipeTreeScreen extends Screen {
             panX = view.x; panY = view.y; zoom = view.zoom; refresh();
         } else onClose();
     }
-    @Override public void render(PoseStack pose, int mouseX, int mouseY, float partialTick) {
+    @Override public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         tooltip = List.of();
-        fill(pose, 0, 0, width, height, 0xED202020);
-        var window = minecraft.getWindow();
-        double guiScale = window.getGuiScale();
+        graphics.fill(0, 0, width, height, 0xED202020);
         requirements();
         int summaryTop = summaryTop();
-        RenderSystem.enableScissor(0, (int)((height - summaryTop) * guiScale), window.getWidth(),
-                Math.max(0, (int)((summaryTop - TOOLBAR) * guiScale)));
-        pose.pushPose();
-        pose.translate(panX, panY, 0);
-        pose.scale((float)zoom, (float)zoom, 1);
+        graphics.enableScissor(0, TOOLBAR, width, summaryTop);
+        graphics.pose().pushPose();
+        graphics.pose().translate(panX, panY, 0);
+        graphics.pose().scale((float)zoom, (float)zoom, 1);
         double tx = (mouseX - panX) / zoom, ty = (mouseY - panY) / zoom;
         for (var view : layout.views) {
             if (!view.node().expanded) continue;
@@ -207,9 +204,9 @@ public final class RecipeTreeScreen extends Screen {
                 var end = layout.byNode.get(child);
                 int x1 = view.x() + TreeLayout.WIDTH, y1 = view.y() + TreeLayout.HEIGHT / 2;
                 int x2 = end.x(), y2 = end.y() + TreeLayout.HEIGHT / 2, mid = (x1 + x2) / 2;
-                fill(pose, x1, y1, mid + 1, y1 + 1, 0xFF66717C);
-                fill(pose, mid, Math.min(y1, y2), mid + 1, Math.max(y1, y2) + 1, 0xFF66717C);
-                fill(pose, mid, y2, x2, y2 + 1, 0xFF66717C);
+                graphics.fill(x1, y1, mid + 1, y1 + 1, 0xFF66717C);
+                graphics.fill(mid, Math.min(y1, y2), mid + 1, Math.max(y1, y2) + 1, 0xFF66717C);
+                graphics.fill(mid, y2, x2, y2 + 1, 0xFF66717C);
             }
         }
         for (var view : layout.views) {
@@ -218,34 +215,34 @@ public final class RecipeTreeScreen extends Screen {
             RecipeNode node = view.node();
             int x = view.x(), y = view.y();
             boolean hover = inside(tx, ty, x, y, TreeLayout.WIDTH, TreeLayout.HEIGHT);
-            CompactUi.panel(pose, x, y, TreeLayout.WIDTH, TreeLayout.HEIGHT);
-            CompactUi.slot(pose, x + 5, y + 5);
-            icon(pose, node.target, x + 6, y + 6);
+            CompactUi.panel(graphics, x, y, TreeLayout.WIDTH, TreeLayout.HEIGHT);
+            CompactUi.slot(graphics, x + 5, y + 5);
+            icon(graphics, node.target, x + 6, y + 6);
             String amount = node.parent != null ? node.requiredAmount() + node.target.unit()
                     : node.selected == null ? node.target.quantity() : node.selected.output(node.target.key()).quantity();
-            CompactUi.nameAndQuantity(pose, font, node.target.name(), "×" + amount,
+            CompactUi.nameAndQuantity(graphics, font, node.target.name(), "×" + amount,
                     x + 28, y + 10, 97, 0x303030, 0x555555);
             if (node != targetRoot)
-                text(pose, node.status(), x + 6, y + 30, RECIPE_X - 9, node.cycle ? 0x995522 : 0x555555);
+                text(graphics, node.status(), x + 6, y + 30, RECIPE_X - 9, node.cycle ? 0x995522 : 0x555555);
             else if (!node.hasConfiguredProduction())
-                text(pose, "未配置", x + 6, y + 30, RECIPE_X - 9, 0xA02020);
+                text(graphics, "未配置", x + 6, y + 30, RECIPE_X - 9, 0xA02020);
             boolean recipeButton = hasProductionChoice(node);
             boolean variantButton = node.inputVariants().size() > 1;
             boolean onRecipe = recipeButton && inside(tx, ty, x + RECIPE_X, y + ACTION_Y, 29, 15);
             boolean onVariant = variantButton && inside(tx, ty, x + VARIANT_X, y + ACTION_Y, 29, 15);
-            if (recipeButton) nodeButton(pose, "配方", x + RECIPE_X, y + ACTION_Y, onRecipe);
-            if (variantButton) nodeButton(pose, "变体", x + VARIANT_X, y + ACTION_Y, onVariant);
+            if (recipeButton) nodeButton(graphics, "配方", x + RECIPE_X, y + ACTION_Y, onRecipe);
+            if (variantButton) nodeButton(graphics, "变体", x + VARIANT_X, y + ACTION_Y, onVariant);
             boolean removable = canRemoveProduction(node);
             boolean onRemove = removable && inside(tx, ty, x + REMOVE_X, y + ACTION_Y, 14, 15);
             if (removable) {
-                CompactUi.button(pose, x + REMOVE_X, y + ACTION_Y, 14, 15, onRemove, true);
-                font.drawShadow(pose, "×", x + REMOVE_X + (14 - font.width("×")) / 2f, y + ACTION_Y + 3, 0xFFFFFF);
+                CompactUi.button(graphics, x + REMOVE_X, y + ACTION_Y, 14, 15, onRemove, true);
+                graphics.drawString(font, "×", x + REMOVE_X + (14 - font.width("×")) / 2, y + ACTION_Y + 3, 0xFFFFFF, true);
             }
             boolean onFold = !node.children.isEmpty() && inside(tx, ty, x + 145, y + 5, 14, 13);
             if (!node.children.isEmpty()) {
-                CompactUi.button(pose, x + 145, y + 5, 14, 13, onFold, true);
+                CompactUi.button(graphics, x + 145, y + 5, 14, 13, onFold, true);
                 String fold = node.expanded ? "−" : "+";
-                font.drawShadow(pose, fold, x + 152 - font.width(fold) / 2f, y + 7, 0xFFFFFF);
+                graphics.drawString(font, fold, x + 152 - font.width(fold) / 2, y + 7, 0xFFFFFF, true);
             }
             if (hover && panels.isEmpty() && mouseY >= TOOLBAR && mouseY < summaryTop) {
                 if (onFold) tooltip = List.of(Component.literal(node.expanded ? "折叠" : "展开"));
@@ -255,25 +252,27 @@ public final class RecipeTreeScreen extends Screen {
                 else tooltip = node.target.tooltip(runtime.getIngredientManager());
             }
         }
-        pose.popPose();
-        RenderSystem.disableScissor();
+        graphics.pose().popPose();
+        graphics.disableScissor();
         // JEI item rendering writes depth above flat GUI geometry. Start a fresh
         // depth layer so tree icons cannot punch through the toolbar or modal.
+        graphics.flush();
         RenderSystem.clear(GL11.GL_DEPTH_BUFFER_BIT, Minecraft.ON_OSX);
-        CompactUi.panel(pose, 0, 0, width, TOOLBAR);
-        text(pose, targetRoot.target.name(), 8, 8, width - 16, 0x303030);
-        if (summaryTop < height) renderSummary(pose, mouseX, mouseY);
-        super.render(pose, mouseX, mouseY, partialTick);
+        CompactUi.panel(graphics, 0, 0, width, TOOLBAR);
+        text(graphics, targetRoot.target.name(), 8, 8, width - 16, 0x303030);
+        if (summaryTop < height) renderSummary(graphics, mouseX, mouseY);
+        super.render(graphics, mouseX, mouseY, partialTick);
         if (!panels.isEmpty()) {
+            graphics.flush();
             RenderSystem.clear(GL11.GL_DEPTH_BUFFER_BIT, Minecraft.ON_OSX);
-            renderPanel(pose, mouseX, mouseY, partialTick);
+            renderPanel(graphics, mouseX, mouseY, partialTick);
         }
-        if (!tooltip.isEmpty()) renderComponentTooltip(pose, tooltip, mouseX, mouseY);
+        if (!tooltip.isEmpty()) graphics.renderComponentTooltip(font, tooltip, mouseX, mouseY);
     }
 
-    private void nodeButton(PoseStack pose, String label, int x, int y, boolean hover) {
-        CompactUi.button(pose, x, y, 29, 15, hover, true);
-        font.drawShadow(pose, label, x + (29 - font.width(label)) / 2f, y + 3, 0xFFFFFF);
+    private void nodeButton(GuiGraphics graphics, String label, int x, int y, boolean hover) {
+        CompactUi.button(graphics, x, y, 29, 15, hover, true);
+        graphics.drawString(font, label, x + (29 - font.width(label)) / 2, y + 3, 0xFFFFFF, true);
     }
 
     private int summaryRows() { return Math.max(1, Math.min(materialLines.size(), height >= 160 ? 2 : 1)); }
@@ -281,19 +280,19 @@ public final class RecipeTreeScreen extends Screen {
         if (targetRoot.selected == null) return height;
         return height - 16 - summaryRows() * MATERIAL_ROW;
     }
-    private void renderSummary(PoseStack pose, int mx, int my) {
+    private void renderSummary(GuiGraphics graphics, int mx, int my) {
         int top = summaryTop();
-        CompactUi.panel(pose, 0, top, width, height - top);
+        CompactUi.panel(graphics, 0, top, width, height - top);
         String heading = "材料需求";
-        font.draw(pose, heading, 6, top + 5, 0x303030);
-        if (requirements.problem() != null) text(pose, requirements.problem(), 6, top + 19, width - 12, 0xA02020);
-        if (!preferences.error.isEmpty()) text(pose, preferences.error, 6 + font.width(heading) + 6,
+        graphics.drawString(font, heading, 6, top + 5, 0x303030, false);
+        if (requirements.problem() != null) text(graphics, requirements.problem(), 6, top + 19, width - 12, 0xA02020);
+        if (!preferences.error.isEmpty()) text(graphics, preferences.error, 6 + font.width(heading) + 6,
                 top + 5, width - font.width(heading) - 18, 0xA02020);
         for (int i = 0; i < summaryRows() && materialScroll + i < materialLines.size(); i++) {
             int y = top + 14 + i * MATERIAL_ROW;
             for (var cell : materialLines.get(materialScroll + i)) {
                 var row = cell.row();
-                CompactUi.material(pose, font, row.ingredient(), null, cell.x(), y, cell.width(), false);
+                CompactUi.material(graphics, font, row.ingredient(), null, cell.x(), y, cell.width(), false);
                 if (panels.isEmpty() && inside(mx, my, cell.x(), y, cell.width(), MATERIAL_ROW)) {
                     tooltip = new ArrayList<>(row.ingredient().tooltip(runtime.getIngredientManager()));
                     if (row.catalyst()) tooltip.add(Component.literal("催化剂，不计入消耗"));
@@ -331,38 +330,38 @@ public final class RecipeTreeScreen extends Screen {
         return panel.mode == PanelMode.DETAILS && row.role().equals("input")
                 ? panel.node.selectedInput(row.slot()) : row.ingredients().get(0);
     }
-    private void renderPanel(PoseStack pose, int mx, int my, float partialTick) {
+    private void renderPanel(GuiGraphics graphics, int mx, int my, float partialTick) {
         tooltip = List.of();
         Panel p = panels.peek();
         int x = panelX(), y = panelY(p), w = panelWidth();
-        fill(pose, 0, 0, width, height, 0x70000000);
-        CompactUi.panel(pose, x, y, w, panelHeight(p));
+        graphics.fill(0, 0, width, height, 0x70000000);
+        CompactUi.panel(graphics, x, y, w, panelHeight(p));
         String heading = switch (p.mode) {
             case DETAILS -> "输入与产物";
             case VARIANTS -> "选择物品";
             case OUTPUTS -> "选择目标产物";
             case AMOUNT -> "单次输入数量";
         };
-        text(pose, heading, x + 8, y + 9, w - 40, 0x303030);
+        text(graphics, heading, x + 8, y + 9, w - 40, 0x303030);
         if (p.editing()) {
-            panelInput.render(pose, mx, my, partialTick);
-            font.draw(pose, "保存", x + w - 34, y + 33, 0x303030);
+            panelInput.render(graphics, mx, my, partialTick);
+            graphics.drawString(font, "保存", x + w - 34, y + 33, 0x303030, false);
             return;
         }
         for (int row = 0; row < panelRows() && p.scroll + row < p.rows.size(); row++) {
             int i = p.scroll + row, cx = x + 6, cy = y + 23 + row * ROW, cw = w - 12;
             boolean hover = inside(mx, my, cx, cy, cw, ROW);
-            fill(pose, cx, cy, cx + cw, cy + ROW - 1, hover ? 0xFFAAAAAA : 0xFFB8B8B8);
+            graphics.fill(cx, cy, cx + cw, cy + ROW - 1, hover ? 0xFFAAAAAA : 0xFFB8B8B8);
             var entry = p.rows.get(i);
             var ingredient = panelIngredient(p, entry);
-            icon(pose, ingredient, cx + 2, cy + 1);
+            icon(graphics, ingredient, cx + 2, cy + 1);
             if (p.mode == PanelMode.VARIANTS) {
-                text(pose, ingredient.name(), cx + 22, cy + 5, cw - 26, 0x303030);
+                text(graphics, ingredient.name(), cx + 22, cy + 5, cw - 26, 0x303030);
             } else {
                 String name = p.mode == PanelMode.DETAILS ? detailName(entry, ingredient) : ingredient.name();
                 String count = p.mode == PanelMode.DETAILS && entry.role().equals("input")
                         ? inputQuantity(p.node, entry.slot(), ingredient) : "×" + ingredient.quantity();
-                CompactUi.nameAndQuantity(pose, font, name, count, cx + 22, cy + 5, cw - 26,
+                CompactUi.nameAndQuantity(graphics, font, name, count, cx + 22, cy + 5, cw - 26,
                         0x303030, 0x555555);
             }
             if (hover) tooltip = ingredient.tooltip(runtime.getIngredientManager());
@@ -375,11 +374,11 @@ public final class RecipeTreeScreen extends Screen {
     private String inputQuantity(RecipeNode node, int slot, TreeIngredient ingredient) {
         return "×" + node.inputAmount(slot) + ingredient.unit();
     }
-    private void icon(PoseStack pose, TreeIngredient ingredient, int x, int y) {
-        pose.pushPose(); pose.translate(x, y, 0); ingredient.render(pose, runtime.getIngredientManager()); pose.popPose();
+    private void icon(GuiGraphics graphics, TreeIngredient ingredient, int x, int y) {
+        graphics.pose().pushPose(); graphics.pose().translate(x, y, 0); ingredient.render(graphics, runtime.getIngredientManager()); graphics.pose().popPose();
     }
-    private void text(PoseStack pose, String value, int x, int y, int maxWidth, int color) {
-        font.draw(pose, font.plainSubstrByWidth(value, Math.max(1, maxWidth)), x, y, color);
+    private void text(GuiGraphics graphics, String value, int x, int y, int maxWidth, int color) {
+        graphics.drawString(font, font.plainSubstrByWidth(value, Math.max(1, maxWidth)), x, y, color, false);
     }
     private boolean inside(double mx, double my, int x, int y, int w, int h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
     @Override public boolean mouseClicked(double mx, double my, int button) {
@@ -453,7 +452,7 @@ public final class RecipeTreeScreen extends Screen {
         panelInput.setMaxLength(10);
         panelInput.setFilter(text -> text.chars().allMatch(c -> c >= '0' && c <= '9'));
         panelInput.setValue(Long.toString(value));
-        panelInput.setFocus(true);
+        panelInput.setFocused(true);
     }
 
     private void saveInput() {

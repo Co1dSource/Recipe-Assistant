@@ -199,12 +199,12 @@ public final class PatternEncoder {
             if (node.selected.inputs().size() != 9 || !((CraftingRecipe) entry.layout.getRecipe()).canCraftInDimensions(3, 3))
                 return "工作台布局不是普通 3×3 配方";
             entry.editable = true;
-            var grid = new CraftingContainer(new AutoCraftingMenu(), 3, 3);
+            var grid = new TransientCraftingContainer(new AutoCraftingMenu(), 3, 3);
             for (int i = 0; i < 9; i++) grid.setItem(i, entry.craftingInput(i).copy());
             var recipe = (CraftingRecipe) entry.layout.getRecipe();
             if (!recipe.matches(grid, Minecraft.getInstance().level)
                     || !(entry.output().typed().getIngredient() instanceof ItemStack expected)
-                    || !ItemStack.matches(recipe.assemble(grid), expected)) return "所选工作台原料与目标输出不匹配";
+                    || !ItemStack.matches(recipe.assemble(grid, Minecraft.getInstance().level.registryAccess()), expected)) return "所选工作台原料与目标输出不匹配";
         } else {
             entry.editable = entry.processingSize() <= menu.getProcessingInputSlots().length
                     && entry.processingOutputSize() <= menu.getProcessingOutputSlots().length;
@@ -444,16 +444,16 @@ public final class PatternEncoder {
     @SubscribeEvent
     public static void render(ScreenEvent.Render.Post event) {
         if (!busy()) return;
-        var screen = event.getScreen(); var mc = Minecraft.getInstance(); var pose = event.getPoseStack();
-        pose.pushPose(); pose.translate(0, 0, 700);
-        Screen.fill(pose, screen.width - 55, 0, screen.width, 21, 0xEE303030);
-        Screen.drawString(pose, mc.font, cancelling ? "正在取消" : "取消", screen.width - 48, 5, 0xFFE0A0);
+        var screen = event.getScreen(); var mc = Minecraft.getInstance(); var graphics = event.getGuiGraphics();
+        graphics.pose().pushPose(); graphics.pose().translate(0, 0, 700);
+        graphics.fill(screen.width - 55, 0, screen.width, 21, 0xEE303030);
+        graphics.drawString(mc.font, cancelling ? "正在取消" : "取消", screen.width - 48, 5, 0xFFE0A0);
         if (state == State.PAUSED) {
-            Screen.fill(pose, 0, 21, screen.width, 42, 0xEE303030);
-            Screen.drawString(pose, mc.font, mc.font.plainSubstrByWidth(message, Math.max(20, screen.width - 65)), 5, 24, 0xFFFFFF);
-            Screen.drawString(pose, mc.font, "继续", screen.width - 48, 24, 0xFFE0A0);
+            graphics.fill(0, 21, screen.width, 42, 0xEE303030);
+            graphics.drawString(mc.font, mc.font.plainSubstrByWidth(message, Math.max(20, screen.width - 65)), 5, 24, 0xFFFFFF);
+            graphics.drawString(mc.font, "继续", screen.width - 48, 24, 0xFFE0A0);
         }
-        pose.popPose();
+        graphics.pose().popPose();
     }
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void mouse(ScreenEvent.MouseButtonPressed.Pre event) {

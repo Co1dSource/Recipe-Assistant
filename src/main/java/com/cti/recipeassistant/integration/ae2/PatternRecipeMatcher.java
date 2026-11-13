@@ -14,14 +14,10 @@ public final class PatternRecipeMatcher {
     private PatternRecipeMatcher() {}
     public static List<PatternDistribution.Route> find(PatternContents contents, JeiRecipeIndex index) {
         if (contents.kind() != PatternContents.Kind.PROCESSING || TreeJeiPlugin.runtime == null) return List.of();
-        Object output = GenericEntryStackHelper.stackToIngredient(contents.outputs().get(0));
-        if (output == null) return List.of();
         var manager = TreeJeiPlugin.runtime.getIngredientManager();
-        var type = manager.getIngredientTypeChecked(output);
-        if (type.isEmpty()) return List.of();
-        var typed = manager.createTypedIngredient(type.get(), output);
-        if (typed.isEmpty()) return List.of();
-        var target = TreeIngredient.of(typed.get(), manager);
+        var output = GenericEntryStackHelper.stackToIngredient(manager, contents.outputs().get(0));
+        if (output == null) return List.of();
+        var target = TreeIngredient.of(output, manager);
         var routes = new LinkedHashMap<String, PatternDistribution.Route>();
         for (var candidate : index.find(target)) {
             var layout = index.layout(candidate.id());

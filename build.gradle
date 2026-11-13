@@ -17,6 +17,10 @@ minecraft {
         client {
             workingDirectory project.file('run')
             property 'forge.logging.console.level', 'info'
+            // Source-set runs do not read the packaged JAR's MixinConfigs manifest.
+            args '--mixin.config', "${mod_id}.mixins.json", '--mixin.config', "${mod_id}.ae2.mixins.json"
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', layout.buildDirectory.file('createSrgToMcp/output.srg').get().asFile.absolutePath
             mods {
                 "${mod_id}" { source sourceSets.main }
             }
@@ -24,34 +28,71 @@ minecraft {
     }
 }
 
-// These are local artifact identifiers, not remote Maven coordinates.
 repositories {
-    flatDir { dirs 'reference/mods' }
+    maven {
+        url = 'https://maven.blamejared.com/'
+        content { includeGroup 'mezz.jei' }
+    }
+    maven {
+        url = 'https://modmaven.dev/'
+        content { includeGroup 'appeng' }
+    }
+    maven {
+        url = 'https://cursemaven.com/'
+        content { includeGroup 'curse.maven' }
+    }
+    maven {
+        url = 'https://maven.ftb.dev/releases/'
+        content { includeGroup 'dev.ftb.mods' }
+    }
+    maven {
+        url = 'https://maven.architectury.dev/'
+        content { includeGroup 'dev.architectury' }
+    }
+    maven {
+        url = 'https://dvs1.progwml6.com/files/maven/'
+        content { includeGroup 'slimeknights.tconstruct'; includeGroup 'slimeknights.mantle' }
+    }
 }
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
-    implementation fg.deobf('local:jei-1.19.2-forge:11.6.0.1024')
-    compileOnly fg.deobf('local:appliedenergistics2-forge:12.9.9')
-    compileOnly fg.deobf('local:ExtendedAE:1.19-0.2.2-forge')
+    implementation fg.deobf("mezz.jei:jei-${minecraft_version}-forge:${jei_version}")
+    def ae2 = "appeng:appliedenergistics2-forge:${ae2_version}"
+    def extendedAe = 'curse.maven:ex-pattern-provider-892005:9304849'
+    def ftbLibrary = 'dev.ftb.mods:ftb-library-forge:2001.2.13'
+    def tconstruct = 'slimeknights.tconstruct:TConstruct:1.20.1-3.11.2.166'
+    def mantle = 'slimeknights.mantle:Mantle:1.20.1-1.11.128'
+    compileOnly fg.deobf(ae2)
+    compileOnly fg.deobf(extendedAe)
+    compileOnly fg.deobf(ftbLibrary)
+    compileOnly fg.deobf(tconstruct)
+    compileOnly fg.deobf(mantle)
     if (providers.gradleProperty('withAe2').getOrElse('true').toBoolean()) {
-        runtimeOnly fg.deobf('local:appliedenergistics2-forge:12.9.9')
-        if (providers.gradleProperty('withExtendedAe').getOrElse('true').toBoolean())
-            runtimeOnly fg.deobf('local:ExtendedAE:1.19-0.2.2-forge')
+        runtimeOnly fg.deobf(ae2)
+        runtimeOnly fg.deobf('curse.maven:guideme-1173950:7013686')
+        if (providers.gradleProperty('withExtendedAe').getOrElse('true').toBoolean()) {
+            runtimeOnly fg.deobf(extendedAe)
+            runtimeOnly fg.deobf('curse.maven:glodium-957920:5226922')
+        }
     }
-
-    // Optional hover integration; compile against the user's actual FTB Library.
-    compileOnly fg.deobf('local:ftb-library-forge:1902.4.1-build.236')
-    // Optional crafting-station integration, matching the user's local jars.
-    compileOnly fg.deobf('local:TConstruct:1.19.2-3.8.5.58')
-    compileOnly fg.deobf('local:Mantle:1.19.2-1.10.48')
+    if (providers.gradleProperty('withFtbLibrary').getOrElse('false').toBoolean()) {
+        runtimeOnly fg.deobf(ftbLibrary)
+        runtimeOnly fg.deobf('dev.architectury:architectury-forge:9.2.14')
+    }
+    if (providers.gradleProperty('withTconstruct').getOrElse('false').toBoolean()) {
+        runtimeOnly fg.deobf(tconstruct)
+        runtimeOnly fg.deobf(mantle)
+    }
 }
 
 tasks.named('processResources', ProcessResources).configure {
-    inputs.property 'mod_version', mod_version
-    inputs.property 'mod_id', mod_id
+    def modProperties = [mod_version: mod_version, mod_id: mod_id, minecraft_version: minecraft_version,
+                         forge_min_version: forge_min_version, jei_min_version: jei_min_version, ae2_version: ae2_version,
+                         extendedae_version: extendedae_version]
+    inputs.properties modProperties
     filesMatching('META-INF/mods.toml') {
-        expand mod_version: mod_version, mod_id: mod_id
+        expand modProperties
     }
 }
 

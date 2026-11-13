@@ -7,7 +7,7 @@ import com.cti.recipeassistant.integration.OptionalIntegrations;
 import com.cti.recipeassistant.integration.OptionalIntegrations.Supply;
 import com.cti.recipeassistant.recipe.MaterialRequirements;
 import com.cti.recipeassistant.recipe.TreeIngredient;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.gui.recipes.RecipesGui;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -80,14 +80,14 @@ public final class CraftQuantityScreen extends Screen {
 
         @Override protected void init() {
             int x = (width - WIDTH) / 2, y = (height - HEIGHT) / 2;
-            addRenderableWidget(new Button(x + 18, y + 29, 22, 18, Component.literal("−"), button -> adjust(-1)));
+            addRenderableWidget(Button.builder(Component.literal("−"), button -> adjust(-1)).bounds(x + 18, y + 29, 22, 18).build());
             amount = addRenderableWidget(new EditBox(font, x + 46, y + 29, 82, 18, Component.literal("份数")));
             amount.setMaxLength(10);
             amount.setFilter(value -> value.chars().allMatch(c -> c >= '0' && c <= '9'));
             amount.setValue(input);
-            addRenderableWidget(new Button(x + 134, y + 29, 22, 18, Component.literal("+"), button -> adjust(1)));
-            confirm = addRenderableWidget(new Button(x + 37, y + 59, 46, 18, Component.literal("确认"), button -> execute()));
-            addRenderableWidget(new Button(x + 91, y + 59, 46, 18, Component.literal("取消"), button -> onClose()));
+            addRenderableWidget(Button.builder(Component.literal("+"), button -> adjust(1)).bounds(x + 134, y + 29, 22, 18).build());
+            confirm = addRenderableWidget(Button.builder(Component.literal("确认"), button -> execute()).bounds(x + 37, y + 59, 46, 18).build());
+            addRenderableWidget(Button.builder(Component.literal("取消"), button -> onClose()).bounds(x + 91, y + 59, 46, 18).build());
             amount.setResponder(value -> { input = value; error = ""; refresh(); });
             setInitialFocus(amount);
             refresh();
@@ -118,13 +118,13 @@ public final class CraftQuantityScreen extends Screen {
             if (started) minecraft.setScreen(jei.parent());
         }
         @Override public void tick() { amount.tick(); refresh(); }
-        @Override public void render(PoseStack pose, int x, int y, float partial) {
-            renderBackground(pose);
+        @Override public void render(GuiGraphics graphics, int x, int y, float partial) {
+            renderBackground(graphics);
             int left = (width - WIDTH) / 2, top = (height - HEIGHT) / 2;
-            CompactUi.panel(pose, left, top, WIDTH, HEIGHT);
-            font.draw(pose, title, (width - font.width(title)) / 2f, top + 11, 0x303030);
-            font.draw(pose, font.plainSubstrByWidth(error, WIDTH - 16), left + 8, top + 49, 0xA02020);
-            super.render(pose, x, y, partial);
+            CompactUi.panel(graphics, left, top, WIDTH, HEIGHT);
+            graphics.drawString(font, title, (width - font.width(title)) / 2, top + 11, 0x303030, false);
+            graphics.drawString(font, font.plainSubstrByWidth(error, WIDTH - 16), left + 8, top + 49, 0xA02020, false);
+            super.render(graphics, x, y, partial);
         }
         @Override public boolean isPauseScreen() { return false; }
         @Override public void onClose() {
@@ -144,10 +144,10 @@ public final class CraftQuantityScreen extends Screen {
         amount.setFilter(value -> value.chars().allMatch(c -> c >= '0' && c <= '9'));
         amount.setValue(input);
         int buttonsY = top + panelHeight() - 25;
-        confirm = addRenderableWidget(new Button(left + panelWidth - 106, buttonsY, 46, 18,
-                Component.literal("确认"), button -> execute()));
-        addRenderableWidget(new Button(left + panelWidth - 55, buttonsY, 46, 18,
-                Component.literal("取消"), button -> onClose()));
+        confirm = addRenderableWidget(Button.builder(Component.literal("确认"), button -> execute())
+                .bounds(left + panelWidth - 106, buttonsY, 46, 18).build());
+        addRenderableWidget(Button.builder(Component.literal("取消"), button -> onClose())
+                .bounds(left + panelWidth - 55, buttonsY, 46, 18).build());
         amount.setResponder(this::inputChanged);
         setInitialFocus(amount);
         inputChanged(input);
@@ -201,31 +201,31 @@ public final class CraftQuantityScreen extends Screen {
         if (started) minecraft.setScreen(jei.parent());
     }
 
-    @Override public void render(PoseStack pose, int mouseX, int mouseY, float partialTick) {
-        renderBackground(pose);
-        CompactUi.panel(pose, left, top, panelWidth, panelHeight());
+    @Override public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        renderBackground(graphics);
+        CompactUi.panel(graphics, left, top, panelWidth, panelHeight());
         var target = tree.finalRoot().target;
-        CompactUi.slot(pose, left + 8, top + 8);
-        CompactUi.icon(pose, target, left + 9, top + 9);
-        label(pose, target.name(), left + 31, top + 12, panelWidth - 40, 0x303030);
-        if (!refill) label(pose, "可合成：" + craft.maximum(), left + 8, top + 53, panelWidth - 16, 0x303030);
-        else if (!terminal) label(pose, "需要打开已同步的 ME 终端", left + 8, top + 53, panelWidth - 16, 0x303030);
+        CompactUi.slot(graphics, left + 8, top + 8);
+        CompactUi.icon(graphics, target, left + 9, top + 9);
+        label(graphics, target.name(), left + 31, top + 12, panelWidth - 40, 0x303030);
+        if (!refill) label(graphics, "可合成：" + craft.maximum(), left + 8, top + 53, panelWidth - 16, 0x303030);
+        else if (!terminal) label(graphics, "需要打开已同步的 ME 终端", left + 8, top + 53, panelWidth - 16, 0x303030);
 
         var rows = requirements.materials();
         for (int i = 0; i < visibleRows && scroll + i < rows.size(); i++) {
             var ingredient = rows.get(scroll + i);
             var supply = terminal ? stock.getOrDefault(MaterialRequirements.identity(ingredient), Supply.MISSING) : null;
-            CompactUi.material(pose, font, ingredient, supply, left + 8, listTop() + i * ROW, panelWidth - 16, false);
+            CompactUi.material(graphics, font, ingredient, supply, left + 8, listTop() + i * ROW, panelWidth - 16, false);
         }
-        if (requirements.problem() != null) label(pose, requirements.problem(), left + 8, listTop() + 4, panelWidth - 16, 0xA02020);
-        super.render(pose, mouseX, mouseY, partialTick);
+        if (requirements.problem() != null) label(graphics, requirements.problem(), left + 8, listTop() + 4, panelWidth - 16, 0xA02020);
+        super.render(graphics, mouseX, mouseY, partialTick);
         if (!refill && craft.problem() != null && CompactUi.hit(mouseX, mouseY, left + panelWidth - 106,
                 top + panelHeight() - 25, 46, 18))
-            renderTooltip(pose, Component.literal(craft.problem()), mouseX, mouseY);
+            graphics.renderTooltip(font, Component.literal(craft.problem()), mouseX, mouseY);
     }
 
-    private void label(PoseStack pose, String text, int x, int y, int maxWidth, int color) {
-        font.draw(pose, font.plainSubstrByWidth(text, maxWidth), x, y, color);
+    private void label(GuiGraphics graphics, String text, int x, int y, int maxWidth, int color) {
+        graphics.drawString(font, font.plainSubstrByWidth(text, maxWidth), x, y, color, false);
     }
 
     @Override public boolean mouseScrolled(double x, double y, double delta) {

@@ -1,11 +1,11 @@
 package com.cti.recipeassistant.recipe;
 
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.ingredients.subtypes.UidContext;
 import mezz.jei.api.runtime.IIngredientManager;
 import net.minecraft.network.chat.Component;
-import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
@@ -25,7 +25,7 @@ public record TreeIngredient(ITypedIngredient<?> typed, String key, String name,
         T value = helper.copyIngredient(typed.getIngredient());
         T keyValue = value;
         if (value instanceof ItemStack stack) {
-            var tag = RecipeItemState.tagForRecipe(Registry.ITEM.getKey(stack.getItem()), stack.getTag());
+            var tag = RecipeItemState.tagForRecipe(BuiltInRegistries.ITEM.getKey(stack.getItem()), stack.getTag());
             if (!Objects.equals(tag, stack.getTag())) {
                 if (exactInput) keyValue = helper.copyIngredient(value);
                 ((ItemStack) keyValue).setTag(tag);
@@ -51,13 +51,13 @@ public record TreeIngredient(ITypedIngredient<?> typed, String key, String name,
     String variantId() {
         return typed.getIngredient() instanceof ItemStack stack ? key + "|" + stack.save(new CompoundTag()) : key;
     }
-    public void render(PoseStack pose, IIngredientManager manager) { renderTyped(pose, manager, typed); }
-    private static <T> void renderTyped(PoseStack pose, IIngredientManager manager, ITypedIngredient<T> ingredient) {
+    public void render(GuiGraphics graphics, IIngredientManager manager) { renderTyped(graphics, manager, typed); }
+    private static <T> void renderTyped(GuiGraphics graphics, IIngredientManager manager, ITypedIngredient<T> ingredient) {
         var renderer = manager.getIngredientRenderer(ingredient.getType());
-        pose.pushPose();
-        pose.scale(16f / renderer.getWidth(), 16f / renderer.getHeight(), 1);
-        renderer.render(pose, ingredient.getIngredient());
-        pose.popPose();
+        graphics.pose().pushPose();
+        graphics.pose().scale(16f / renderer.getWidth(), 16f / renderer.getHeight(), 1);
+        renderer.render(graphics, ingredient.getIngredient());
+        graphics.pose().popPose();
     }
     public List<Component> tooltip(IIngredientManager manager) { return tooltipTyped(manager, typed); }
     private static <T> List<Component> tooltipTyped(IIngredientManager manager, ITypedIngredient<T> ingredient) {

@@ -1,7 +1,7 @@
 package com.cti.recipeassistant.recipe;
 
 import com.cti.recipeassistant.client.operation.ItemIdentity;
-import net.minecraft.core.Registry;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.*;
 
@@ -28,7 +28,7 @@ public final class RecipeNode {
         this.preferences = preferences;
         var identity = MaterialRequirements.identity(target);
         preferenceIdentity = identity instanceof ItemIdentity item
-                ? Registry.ITEM.getKey(item.item()) + "|" + item.tag() + "|" + item.capabilities()
+                ? BuiltInRegistries.ITEM.getKey(item.item()) + "|" + item.tag() + "|" + item.capabilities()
                 : target.key();
         depth = parent == null ? 0 : parent.depth + 1;
         boolean repeats = false;

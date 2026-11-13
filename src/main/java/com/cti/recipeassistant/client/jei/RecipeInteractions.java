@@ -5,8 +5,10 @@ import com.cti.recipeassistant.integration.PatternConfirmation;
 import com.cti.recipeassistant.client.gui.*;
 import com.cti.recipeassistant.client.operation.*;
 import com.cti.recipeassistant.mixin.RecipesGuiAccessor;
+import com.cti.recipeassistant.mixin.RecipeGuiLayoutsAccessor;
 import com.cti.recipeassistant.mixin.RecipeGuiLogicAccessor;
-import mezz.jei.gui.ingredients.IngredientLookupState;
+import mezz.jei.gui.recipes.lookups.ILookupState;
+import mezz.jei.gui.recipes.RecipeLayoutWithButtons;
 import com.cti.recipeassistant.recipe.*;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.ingredients.ITypedIngredient;
@@ -27,7 +29,7 @@ import java.util.*;
 public final class RecipeInteractions {
     public record Selection(RecipeNode node, JeiRecipeIndex index, Screen returnTo, Runnable refresh,
                             Map<IRecipeLayoutDrawable<?>, Optional<RecipeCandidate>> choices) {}
-    public record JeiContext(RecipesGui screen, Screen parent, IngredientLookupState state,
+    public record JeiContext(RecipesGui screen, Screen parent, ILookupState state,
                              List<ITypedIngredient<?>> focuses, Map<Object, String> targets, Selection pending) {}
     public static JeiContext captureJei(RecipesGui gui) {
         var access = (RecipesGuiAccessor) gui;
@@ -127,9 +129,19 @@ public final class RecipeInteractions {
         var state = access.cti$getState();
         int index = state.getFocusedRecipes().getRecipes().indexOf(selected.getRecipe());
         if (index < 0) return;
-        int pageSize = Math.max(1, state.getRecipesPerPage());
-        state.setRecipeIndex(index / pageSize * pageSize);
+        int page = index / Math.max(1, state.getRecipesPerPage());
+        state.goToFirstPage();
+        for (int i = 0; i < page; i++) state.nextPage();
         access.cti$restoreState(state, false);
+    }
+
+    static List<IRecipeLayoutDrawable<?>> visibleLayouts(RecipesGui gui) {
+        var layouts = ((RecipesGuiAccessor) gui).cti$getLayouts();
+        var visible = new ArrayList<IRecipeLayoutDrawable<?>>();
+        for (var entry : ((RecipeGuiLayoutsAccessor) layouts).cti$getVisibleLayouts()) {
+            if (entry instanceof RecipeLayoutWithButtons<?> recipe) visible.add(recipe.recipeLayout());
+        }
+        return visible;
     }
     public static boolean accept(ClientRecipeOperation<?> operation) {
         if (selection == null) return false;
@@ -215,7 +227,7 @@ public final class RecipeInteractions {
     }
     public static boolean key(Screen screen, double x, double y) {
         world();
-        if (screen instanceof RecipesGui gui) for (var layout : ((RecipesGuiAccessor) gui).cti$getRecipeLayouts()) {
+        if (screen instanceof RecipesGui gui) for (var layout : visibleLayouts(gui)) {
             var slot = layout.getRecipeSlotUnderMouse(x, y);
             var hovered = slot.flatMap(s -> s.getDisplayedIngredient());
             if (hovered.isEmpty()) continue;

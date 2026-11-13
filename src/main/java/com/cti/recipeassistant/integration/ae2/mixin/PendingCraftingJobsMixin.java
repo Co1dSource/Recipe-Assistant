@@ -9,10 +9,12 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.UUID;
+
 @Mixin(value = PendingCraftingJobs.class, remap = false)
 public abstract class PendingCraftingJobsMixin {
-    @Inject(method = "jobStatus", at = @At("TAIL"))
-    private static void cti$trackMaterialOrder(String id, AEKey key, long amount, long remaining, Status status, CallbackInfo ci) {
+    @Inject(method = "jobStatus(Ljava/util/UUID;Lappeng/api/stacks/AEKey;JJLappeng/core/sync/packets/CraftingJobStatusPacket$Status;)V", at = @At("TAIL"))
+    private static void cti$trackMaterialOrder(UUID id, AEKey key, long amount, long remaining, Status status, CallbackInfo ci) {
         Ae2Refill.jobStatus(id, key, amount, status);
     }
 }

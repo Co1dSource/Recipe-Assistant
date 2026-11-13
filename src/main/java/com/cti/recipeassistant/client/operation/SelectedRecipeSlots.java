@@ -2,12 +2,12 @@ package com.cti.recipeassistant.client.operation;
 
 import com.cti.recipeassistant.recipe.RecipeNode;
 import com.cti.recipeassistant.recipe.TreeIngredient;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
-import mezz.jei.api.ingredients.IIngredientType;
 import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.recipe.RecipeIngredientRole;
+import net.minecraft.tags.TagKey;
 import java.util.*;
 import java.util.stream.Stream;
 
@@ -30,16 +30,13 @@ public final class SelectedRecipeSlots implements IRecipeSlotsView {
         return slots.stream().filter(slot -> slot.getSlotName().filter(name::equals).isPresent()).findFirst();
     }
     private record SelectedSlot(IRecipeSlotView original, TreeIngredient chosen) implements IRecipeSlotView {
-        public <T> Stream<T> getIngredients(IIngredientType<T> type) {
-            return type.equals(chosen.typed().getType())
-                    ? Stream.of(type.getIngredientClass().cast(chosen.typed().getIngredient())) : Stream.empty();
-        }
         public Stream<ITypedIngredient<?>> getAllIngredients() { return Stream.of(chosen.typed()); }
-        public boolean isEmpty() { return false; }
-        public <T> Optional<T> getDisplayedIngredient(IIngredientType<T> type) { return getIngredients(type).findFirst(); }
+        public List<ITypedIngredient<?>> getAllIngredientsList() { return List.of(chosen.typed()); }
+        public Stream<ITypedIngredient<?>> getDisplayedIngredients() { return getAllIngredients(); }
         public Optional<ITypedIngredient<?>> getDisplayedIngredient() { return Optional.of(chosen.typed()); }
         public Optional<String> getSlotName() { return original.getSlotName(); }
+        public Optional<TagKey<?>> getTagKey() { return Optional.empty(); }
         public RecipeIngredientRole getRole() { return original.getRole(); }
-        public void drawHighlight(PoseStack pose, int color) { original.drawHighlight(pose, color); }
+        public void drawHighlight(GuiGraphics graphics, int color) { original.drawHighlight(graphics, color); }
     }
 }

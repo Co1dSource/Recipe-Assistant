@@ -4,9 +4,9 @@ import appeng.client.gui.me.patternaccess.PatternAccessTermScreen;
 import appeng.crafting.pattern.EncodedPatternItem;
 import com.cti.recipeassistant.client.gui.CompactUi;
 import com.cti.recipeassistant.client.operation.*;
-import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.gui.GuiGraphics;
 import mezz.jei.common.Internal;
-import mezz.jei.gui.elements.GuiIconButtonSmall;
+import mezz.jei.gui.elements.GuiIconButton;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
@@ -38,18 +38,18 @@ public final class DistributionPreview {
     private static int buttonX(PatternAccessTermScreen<?> terminal){return terminal.getGuiLeft()+175;}
     private static int buttonY(PatternAccessTermScreen<?> terminal){return terminal.getGuiTop()+3;}
     private static boolean available(){return !PatternDistributor.busy() && !CraftExecutor.busy() && !PatternEncoder.busy() && !SingleRecipeTransfer.busy();}
-    private static GuiIconButtonSmall distributionButton(PatternAccessTermScreen<?> terminal) {
+    private static GuiIconButton distributionButton(PatternAccessTermScreen<?> terminal) {
         var textures = Internal.getTextures();
-        var button = new GuiIconButtonSmall(buttonX(terminal), buttonY(terminal), BUTTON_SIZE, BUTTON_SIZE,
+        var button = new GuiIconButton(buttonX(terminal), buttonY(terminal), BUTTON_SIZE, BUTTON_SIZE,
                 textures.getArrowNext(), ignored -> {
                     String error = PatternDistributor.start(terminal);
                     if (!error.isEmpty()) Minecraft.getInstance().gui.getChat().addMessage(Component.literal(error));
-                }, textures);
+                });
         button.active = available();
         return button;
     }
-    private static void renderTooltip(Screen screen,PoseStack pose,List<Component> lines,int x,int y){
-        pose.pushPose();pose.translate(0,0,-350);screen.renderComponentTooltip(pose,lines,x,y);pose.popPose();
+    private static void renderTooltip(GuiGraphics graphics,List<Component> lines,int x,int y){
+        graphics.pose().pushPose();graphics.pose().translate(0,0,-350);graphics.renderComponentTooltip(Minecraft.getInstance().font, lines,x,y);graphics.pose().popPose();
     }
     private int width(){return Math.min(340,terminal.width-16);}
     private int columns(){return Math.max(1,(width()-41)/SLOT);}
@@ -63,29 +63,28 @@ public final class DistributionPreview {
     private int height(){return 62+Math.max(1,Math.min(visible(),choices.size()))*rowHeight();}
     private int left(){return (terminal.width-width())/2;}
     private int top(){return (terminal.height-height())/2;}
-    private void text(PoseStack pose,String text,int x,int y,int width,int color){
-        var font=Minecraft.getInstance().font;font.draw(pose,font.plainSubstrByWidth(text,Math.max(1,width)),x,y,color);
+    private void text(GuiGraphics graphics,String text,int x,int y,int width,int color){
+        var font=Minecraft.getInstance().font;graphics.drawString(font, font.plainSubstrByWidth(text,Math.max(1,width)),x,y,color, false);
     }
     @SubscribeEvent public static void render(ScreenEvent.Render.Post event){
         if(!(event.getScreen() instanceof PatternAccessTermScreen<?> terminal))return;
         if(PatternDistributor.busy() && open==null)return;
-        var pose=event.getPoseStack();pose.pushPose();pose.translate(0,0,700);
+        var graphics=event.getGuiGraphics();graphics.pose().pushPose();graphics.pose().translate(0,0,700);
         if(open==null){
             int x=buttonX(terminal),y=buttonY(terminal);boolean hover=CompactUi.hit(event.getMouseX(),event.getMouseY(),x,y,BUTTON_SIZE,BUTTON_SIZE);
-            distributionButton(terminal).render(pose,event.getMouseX(),event.getMouseY(),event.getPartialTick());
-            if(hover)renderTooltip(terminal,pose,List.of(Component.literal("自动分发")),event.getMouseX(),event.getMouseY());
+            distributionButton(terminal).render(graphics,event.getMouseX(),event.getMouseY(),event.getPartialTick());
+            if(hover)renderTooltip(graphics,List.of(Component.literal("自动分发")),event.getMouseX(),event.getMouseY());
         }else if(open.terminal==terminal){
             if(open.dirty)PatternDistributor.refreshChoices();
-            if(open!=null)open.draw(pose,event.getMouseX(),event.getMouseY());
+            if(open!=null)open.draw(graphics,event.getMouseX(),event.getMouseY());
         }
-        pose.popPose();
+        graphics.pose().popPose();
     }
-    private void draw(PoseStack pose,int mx,int my){
-        int l=left(),t=top(),w=width();CompactUi.panel(pose,l,t,w,height());
-        var renderer=Minecraft.getInstance().getItemRenderer();float z=renderer.blitOffset;renderer.blitOffset=710;
-        renderer.renderAndDecorateItem(row.pattern,l+8,t+9);
-        text(pose,row.name(),l+29,t+10,w-55,0x303030);text(pose,"×",l+w-19,t+9,12,0x555555);
-        text(pose,row.reason.isEmpty()?row.machine():row.reason,l+9,t+31,w-18,row.reason.isEmpty()?0x555555:0x993333);
+    private void draw(GuiGraphics graphics,int mx,int my){
+        int l=left(),t=top(),w=width();CompactUi.panel(graphics,l,t,w,height());
+        graphics.renderItem(row.pattern,l+8,t+9);
+        text(graphics,row.name(),l+29,t+10,w-55,0x303030);text(graphics,"×",l+w-19,t+9,12,0x555555);
+        text(graphics,row.reason.isEmpty()?row.machine():row.reason,l+9,t+31,w-18,row.reason.isEmpty()?0x555555:0x993333);
         int visible=visible(),rowHeight=rowHeight(),columns=columns();
         List<Component> tooltip=List.of();
         for(int n=0;n<visible;n++){
@@ -95,10 +94,10 @@ public final class DistributionPreview {
             var inventory=provider.record().getInventory();
             boolean usable=provider.free()>0 || PatternDistribution.contains(provider,row.contents);
             boolean hover=CompactUi.hit(mx,my,l+7,y,w-14,rowHeight-3);
-            Screen.fill(pose,l+7,y,l+w-7,y+rowHeight-3,usable && hover?0xFFAAAAAA:0xFFB8B8B8);
-            renderer.renderAndDecorateItem(group.icon().toStack(),l+10,y+4);
+            graphics.fill(l+7,y,l+w-7,y+rowHeight-3,usable && hover?0xFFAAAAAA:0xFFB8B8B8);
+            graphics.renderItem(group.icon().toStack(),l+10,y+4);
             String label="#"+(index+1)+" "+provider.name()+(row.routes.size()>1?" / "+choice.route().machine():"");
-            text(pose,label,l+31,y+4,w-43,usable?0x303030:0x555555);
+            text(graphics,label,l+31,y+4,w-43,usable?0x303030:0x555555);
             if(hover){
                 tooltip=new ArrayList<>();
                 tooltip.add(group.name());
@@ -111,17 +110,16 @@ public final class DistributionPreview {
                 if(stack.isEmpty())continue;
                 int px=l+31+shown%columns*SLOT,py=y+15+shown/columns*SLOT;
                 var icon=stack.getItem() instanceof EncodedPatternItem pattern?pattern.getOutput(stack):stack;
-                renderer.renderAndDecorateItem(icon.isEmpty()?stack:icon,px,py);
-                if(CompactUi.hit(mx,my,px,py,16,16))tooltip=terminal.getTooltipFromItem(stack);
+                graphics.renderItem(icon.isEmpty()?stack:icon,px,py);
+                if(CompactUi.hit(mx,my,px,py,16,16))tooltip=Screen.getTooltipFromItem(Minecraft.getInstance(), stack);
                 shown++;
             }
         }
-        renderer.blitOffset=z;
         if(choices.size()>visible){
             int h=visible*rowHeight,thumb=Math.max(8,h*visible/choices.size()),y=t+LIST_TOP+(h-thumb)*offset/(choices.size()-visible);
-            Screen.fill(pose,l+w-5,y,l+w-3,y+thumb,0xFF555555);
+            graphics.fill(l+w-5,y,l+w-3,y+thumb,0xFF555555);
         }
-        if(!tooltip.isEmpty())renderTooltip(terminal,pose,tooltip,mx,my);
+        if(!tooltip.isEmpty())renderTooltip(graphics,tooltip,mx,my);
     }
     @SubscribeEvent(priority=EventPriority.HIGHEST)public static void mouse(ScreenEvent.MouseButtonPressed.Pre event){
         if(!(event.getScreen() instanceof PatternAccessTermScreen<?> terminal))return;
